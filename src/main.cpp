@@ -1,3 +1,5 @@
+//TZ_adjust = 1; d = $(date + % s); t = $(echo "60*60*$TZ_adjust/1" | bc); echo T$(echo $d + $t | bc ) > / dev / ttyUSB0
+
 //#define DEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
 #ifdef DEBUG    //Macros are usually in all capital letters.
   #define DPRINT(...)    Serial.print(__VA_ARGS__)     //DPRINT is a macro, debug print
@@ -13,8 +15,11 @@
 #include <GyverEncoder.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
-#include <ESP8266mDNS.h>
+#include <WiFiUdp.h>
+#include <Dns.h>
 #include <ArduinoOTA.h>
+#include <Time.h>
+#include <NTPClient.h>
 
 #define CLK       13
 #define DT        12
@@ -27,10 +32,16 @@ const char* otaPassword = "esp1901";
 const char* ssid = "SkyNET";
 const char* password = "18Kuskov!";
 
+const long utcOffsetInSeconds = 3600;
+char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+
 Encoder enc1(CLK, DT, SW);
 int currentValue, oldValue, storedValue;
 
-void OTAini(){
+void OTAini()
+{
   ArduinoOTA.setPort(8266);
   ArduinoOTA.setHostname(otaHostName);
   ArduinoOTA.setPassword(otaPassword);
@@ -62,7 +73,16 @@ void OTAini(){
   ArduinoOTA.begin();
 }
 
-void setup() {
+
+
+time_t timeSyncNTP()
+{
+  timeClient.update();
+  return 
+}
+
+void setup() 
+{
   Serial.begin(115200);
   DPRINTLN("Booting");
   WiFi.mode(WIFI_STA);
@@ -78,14 +98,21 @@ void setup() {
   DPRINTLN("IP address: ");
   DPRINTLN(WiFi.localIP());
 
+  timeClient.begin();
+
   enc1.setTickMode(AUTO);
   pinMode(MOSFET, OUTPUT);
   currentValue = 0;
 }
 
 void loop() {
+  // OTA
   ArduinoOTA.handle();
+
+  now();
+
   
+
   if (enc1.isRight())
     currentValue += INCREMENT;
 
@@ -107,6 +134,7 @@ void loop() {
   }
 
   oldValue = currentValue;
+
 
 }
 
