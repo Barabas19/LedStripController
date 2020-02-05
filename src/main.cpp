@@ -1,7 +1,5 @@
-//TZ_adjust = 1; d = $(date + % s); t = $(echo "60*60*$TZ_adjust/1" | bc); echo T$(echo $d + $t | bc ) > / dev / ttyUSB0
-
-//#define DEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
-#ifdef DEBUG    //Macros are usually in all capital letters.
+#define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
+#ifdef DDEBUG    //Macros are usually in all capital letters.
   #define DPRINT(...)    Serial.print(__VA_ARGS__)     //DPRINT is a macro, debug print
   #define DPRINTLN(...)  Serial.println(__VA_ARGS__)   //DPRINTLN is a macro, debug print with new line
   #define DPRINTF(...)   Serial.printf(__VA_ARGS__)
@@ -16,7 +14,6 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiUdp.h>
-#include <Dns.h>
 #include <ArduinoOTA.h>
 #include <Time.h>
 #include <NTPClient.h>
@@ -26,6 +23,10 @@
 #define SW        14
 #define MOSFET    4
 #define INCREMENT 51
+
+#define SUNRISE_VALUE   50        // %, at this value sunrise is finished
+#define SUNRISE_SPEED   50.0/1    // %/s, in this time light value reaches the sunrise value
+
 
 const char* otaHostName = "WorkspaceLedStrip";
 const char* otaPassword = "esp1901";
@@ -38,7 +39,11 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
 Encoder enc1(CLK, DT, SW);
-int currentValue, oldValue, storedValue;
+int currentValue = 0, oldValue = 0, storedValue = 0;
+ulong sunriseTime = 0;
+int sunriseValueRel = SUNRISE_VALUE;
+float sunriseSpeedRel = SUNRISE_SPEED;
+bool sunrise, startSunrise;
 
 void OTAini()
 {
@@ -71,14 +76,36 @@ void OTAini()
     else if (error == OTA_END_ERROR) DPRINTLN("End Failed");
   });
   ArduinoOTA.begin();
+
 }
-
-
 
 time_t timeSyncNTP()
 {
   timeClient.update();
-  return 
+  DPRINTLN(timeClient.getFormattedTime());
+  return timeClient.getEpochTime();
+}
+
+bool sunRiseHandle(bool _sunRise, int& lightValue)
+{
+  int newValue;
+  if(!_sunRise)
+    return false;
+  auto now = millis();
+  if(sunriseTime < now)
+    return true;
+  if(sunriseValueRel * 1024 / 100 > lightValue)
+  {
+    newValue = (sunriseValueRel - (sunriseTime - now) * sunriseSpeedRel / 1000) * 1024 / 100;
+    lightValue = max(lightValue, newValue);
+  }
+  else
+  {
+    newValue = (sunriseValueRel + (sunriseTime - now) * sunriseSpeedRel / 1000) * 1024 / 100;
+    lightValue = min(lightValue, newValue);
+  }
+  lightValue = max(min(lightValue, 1024), 0);
+  return false;  
 }
 
 void setup() 
@@ -98,18 +125,29 @@ void setup()
   DPRINTLN("IP address: ");
   DPRINTLN(WiFi.localIP());
 
-  timeClient.begin();
-
   enc1.setTickMode(AUTO);
   pinMode(MOSFET, OUTPUT);
-  currentValue = 0;
+
+  timeClient.begin();
+  timeSyncNTP();
+  setSyncProvider(timeSyncNTP);
+  setSyncInterval(10);
+  startSunrise = true;
+  sunriseSpeedRel = 100.0;
+  sunriseValueRel = 100;
+  sunriseTime = millis() + 1000;
 }
 
 void loop() {
   // OTA
   ArduinoOTA.handle();
 
-  now();
+  if(startSunrise)
+  {
+    if(sunRiseHandle(startSunrise, currentValue))
+      startSunrise = false;
+  }
+
 
   
 
@@ -130,7 +168,7 @@ void loop() {
   if(currentValue != oldValue)
   {
     analogWrite(MOSFET, currentValue);
-    Serial.println("New value = " + String(currentValue));
+    DPRINTLN("New value = " + String(currentValue));
   }
 
   oldValue = currentValue;
