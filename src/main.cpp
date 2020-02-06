@@ -18,39 +18,141 @@
 #include <Time.h>
 #include <NTPClient.h>
 
-#define CLK       13
-#define DT        12
-#define SW        14
-#define MOSFET    4
-#define INCREMENT 5 // %
+#define CLK_PIN1      13
+#define DT_PIN1       12
+#define SW_PIN1       14
+#define MOSFET_PIN1   4
 
-#define SUNRISE_VALUE   50        // %, at this value sunrise is finished
-#define SUNRISE_SPEED   50.0/1    // %/s, in this time light value reaches the sunrise value
+#define CLK_PIN2      2
+#define DT_PIN2       9
+#define SW_PIN2       10
+#define MOSFET_PIN2   15
 
+#define INCREMENT     5     // %
+#define MANUAL_SPEED  50    // %/s
+#define STARTUP_SPEED 100
+#define SUNRISE_SPEED 100/1800
 
 const char* otaHostName = "WorkspaceLedStrip";
-const char* otaPassword = "esp1901";
+const char* otaPasotaPasSW_PIN1ord = "esp1901";
 const char* ssid = "SkyNET";
-const char* password = "18Kuskov!";
+const char* paspasSW_PIN1ord = "18Kuskov!";
 
 const long utcOffsetInSeconds = 3600;
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
-Encoder enc1(CLK, DT, SW);
 ulong sunriseTime = 0;
-double sunriseValueRel = SUNRISE_VALUE;
-double sunriseSpeedRel = SUNRISE_SPEED;
-double currentValueRel = 0.0, storedValueRel = 0.0, oldValueRel = 0.0;
-ulong timeBuff;
-bool sunrise, startSunrise;
+
+struct Strip
+{
+  Encoder enc;
+  ulong timeBuff;
+  int mosfetPin;
+  char name[5];
+  double currentVal = 0.0;
+  double targetVal = 100.0;
+  double storedVal = 0.0;
+  double oldVal = 0.0;
+  double speed = STARTUP_SPEED;
+  bool changeEna = true;
+  bool startUp = true;
+} strip[2];
+
+void InitializeStrips()
+{
+  strip[0].enc = Encoder(CLK_PIN1, DT_PIN1, SW_PIN1);
+  strip[1].enc = Encoder(CLK_PIN2, DT_PIN2, SW_PIN2);
+  strip[0].enc.setTickMode(AUTO);
+  strip[1].enc.setTickMode(AUTO);
+
+  strip[0].timeBuff = millis();
+  strip[1].timeBuff = millis();
+
+  strip[0].mosfetPin = MOSFET_PIN1;
+  strip[1].mosfetPin = MOSFET_PIN2;
+  pinMode(strip[0].mosfetPin, OUTPUT);
+  pinMode(strip[1].mosfetPin, OUTPUT);
+
+  strcpy(strip[0].name, "upper");
+  strcpy(strip[1].name, "lower");
+  DPRINTF("%s and %s strips initialized\n", strip[0].name, strip[1].name);
+  DPRINTF("%s strip speed value: %.2f\n", strip[0].name, strip[0].speed);
+}
+
+void stripEncoderHandle(Strip& _strip)
+{  
+  if (_strip.enc.isRight() && !_strip.startUp)
+  {
+    _strip.changeEna = true;
+    _strip.targetVal += INCREMENT;
+    _strip.speed = MANUAL_SPEED;
+  }
+
+  if (_strip.enc.isLeft() && !_strip.startUp)
+  {
+    _strip.changeEna = true;
+    _strip.targetVal -= INCREMENT;
+    _strip.speed = -MANUAL_SPEED;
+  }
+
+  if(_strip.enc.isClick() && !_strip.startUp)
+  {
+    _strip.storedVal = _strip.targetVal > 0 ? _strip.targetVal : 0;
+    _strip.targetVal = _strip.targetVal > 0 ? 0 : (_strip.storedVal > 0 ? _strip.storedVal : (100 / 2));
+  }
+
+  _strip.targetVal = max(min(_strip.targetVal, 100.0), 0.0);
+}
+
+void stripValueHandle(Strip& _strip)
+{
+  auto now = millis();
+  auto cycleTime = now - _strip.timeBuff;
+  _strip.timeBuff = now;
+
+  auto valueReached = (_strip.speed > 0 && _strip.currentVal > _strip.targetVal) 
+    || (_strip.speed < 0 && _strip.currentVal < _strip.targetVal)
+    || _strip.speed == 0 || _strip.currentVal == _strip.targetVal;
+
+  if(valueReached)
+  {
+    _strip.changeEna = false;
+    if(_strip.startUp)
+    {
+      if(_strip.speed < 0)
+        _strip.startUp = false;
+      else
+      {
+        _strip.changeEna = true;
+        _strip.speed = -STARTUP_SPEED;
+        _strip.targetVal = 0.0;
+      }
+    }
+  }
+  
+  if(_strip.changeEna)
+  {
+    auto newVal = _strip.currentVal + _strip.speed * cycleTime / 1000;
+    _strip.currentVal = max(min(newVal, 100.0), 0.0);
+  }
+
+  if(_strip.currentVal != _strip.oldVal)
+  {
+    analogWrite(_strip.mosfetPin, _strip.currentVal * 1024 / 100);
+    DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
+  }
+
+  _strip.oldVal = _strip.currentVal;
+  stripEncoderHandle(_strip);
+}
 
 void OTAini()
 {
   ArduinoOTA.setPort(8266);
   ArduinoOTA.setHostname(otaHostName);
-  ArduinoOTA.setPassword(otaPassword);
+  ArduinoOTA.setPassword(otaPasotaPasSW_PIN1ord);
 
   ArduinoOTA.onStart([]() {
     String type;
@@ -87,49 +189,15 @@ time_t timeSyncNTP()
   return timeClient.getEpochTime();
 }
 
-bool sunRiseHandle(bool enable, double& actualValue, ulong& prevCall, double speed, double endValue)
-{
-  if(!enable) // not enabled
-    return false;
-  if((speed > 0 && actualValue > endValue) || (speed < 0 && actualValue < endValue)
-    || speed == 0 || actualValue == endValue) // endValue reached
-    return true;
-
-  auto now = millis();
-  auto newValue = actualValue + speed * (now - prevCall);
-  actualValue = min(max(newValue, 0.0), 100.0);
-  return false;
-}
-
-bool sunRiseHandle(bool _sunRise, int& lightValue)
-{
-  int newValue;
-  if(!_sunRise)
-    return false;
-  auto now = millis();
-  if(sunriseTime < now)
-    return true;
-  if(sunriseValueRel * 1024 / 100 > lightValue)
-  {
-    newValue = (sunriseValueRel - (sunriseTime - now) * sunriseSpeedRel / 1000) * 1024 / 100;
-    lightValue = max(lightValue, newValue);
-  }
-  else
-  {
-    newValue = (sunriseValueRel + (sunriseTime - now) * sunriseSpeedRel / 1000) * 1024 / 100;
-    lightValue = min(lightValue, newValue);
-  }
-  lightValue = max(min(lightValue, 1024), 0);
-  return false;  
-}
 
 void setup() 
 {
-  Serial.begin(115200);
+  Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
   DPRINTLN("Booting");
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+  WiFi.begin(ssid, paspasSW_PIN1ord);
+  while (WiFi.waitForConnectResult() != WL_CONNECTED) 
+  {
     DPRINTLN("Connection Failed! Rebooting...");
     delay(5000);
     ESP.restart();
@@ -140,59 +208,17 @@ void setup()
   DPRINTLN("IP address: ");
   DPRINTLN(WiFi.localIP());
 
-  enc1.setTickMode(AUTO);
-  pinMode(MOSFET, OUTPUT);
-
   timeClient.begin();
-  timeSyncNTP();
   setSyncProvider(timeSyncNTP);
   setSyncInterval(10);
-  startSunrise = true;
-  sunriseSpeedRel = 100.0;
-  sunriseValueRel = 100.0;
-  timeBuff = millis();
+  InitializeStrips();
 }
 
-void loop() {
-  // OTA
-  ArduinoOTA.handle();
-
-  if(startSunrise)
-  {
-    if(sunRiseHandle(startSunrise, currentValueRel, timeBuff, sunriseSpeedRel, sunriseValueRel))
-    {
-      if(sunriseSpeedRel > 0)
-      {
-        sunriseSpeedRel = -100.0;
-        sunriseValueRel = 0.0;
-      }
-      else
-      {
-        startSunrise = false;
-      }
-    }
-  }
-
-  if (enc1.isRight())
-    currentValueRel += INCREMENT;
-
-  if (enc1.isLeft())
-    currentValueRel -= INCREMENT;
-
-  if(enc1.isClick())
-  {
-    storedValueRel = currentValueRel > 0 ? currentValueRel : 0;
-    currentValueRel = currentValueRel > 0 ? 0 : (storedValueRel > 0 ? storedValueRel : (100 / 2));
-  }
-
-  currentValueRel = max(min(currentValueRel, 100.0), 0.0);
-
-  if(currentValueRel != oldValueRel)
-  {
-    analogWrite(MOSFET, currentValueRel * 1024 / 100);
-    DPRINTLN("New value = " + String(currentValueRel) + "%");
-  }
-
-  oldValueRel = currentValueRel;
+void loop() 
+{
+  now();
+  ArduinoOTA.handle(); // OTA
+  stripValueHandle(strip[0]);
+  stripValueHandle(strip[1]);
 }
 
