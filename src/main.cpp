@@ -22,7 +22,7 @@
 #define DT        12
 #define SW        14
 #define MOSFET    4
-#define INCREMENT 51
+#define INCREMENT 5 // %
 
 #define SUNRISE_VALUE   50        // %, at this value sunrise is finished
 #define SUNRISE_SPEED   50.0/1    // %/s, in this time light value reaches the sunrise value
@@ -39,10 +39,11 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
 Encoder enc1(CLK, DT, SW);
-int currentValue = 0, oldValue = 0, storedValue = 0;
 ulong sunriseTime = 0;
-int sunriseValueRel = SUNRISE_VALUE;
-float sunriseSpeedRel = SUNRISE_SPEED;
+double sunriseValueRel = SUNRISE_VALUE;
+double sunriseSpeedRel = SUNRISE_SPEED;
+double currentValueRel = 0.0, storedValueRel = 0.0, oldValueRel = 0.0;
+ulong timeBuff;
 bool sunrise, startSunrise;
 
 void OTAini()
@@ -84,6 +85,20 @@ time_t timeSyncNTP()
   timeClient.update();
   DPRINTLN(timeClient.getFormattedTime());
   return timeClient.getEpochTime();
+}
+
+bool sunRiseHandle(bool enable, double& actualValue, ulong& prevCall, double speed, double endValue)
+{
+  if(!enable) // not enabled
+    return false;
+  if((speed > 0 && actualValue > endValue) || (speed < 0 && actualValue < endValue)
+    || speed == 0 || actualValue == endValue) // endValue reached
+    return true;
+
+  auto now = millis();
+  auto newValue = actualValue + speed * (now - prevCall);
+  actualValue = min(max(newValue, 0.0), 100.0);
+  return false;
 }
 
 bool sunRiseHandle(bool _sunRise, int& lightValue)
@@ -134,8 +149,8 @@ void setup()
   setSyncInterval(10);
   startSunrise = true;
   sunriseSpeedRel = 100.0;
-  sunriseValueRel = 100;
-  sunriseTime = millis() + 1000;
+  sunriseValueRel = 100.0;
+  timeBuff = millis();
 }
 
 void loop() {
@@ -144,35 +159,40 @@ void loop() {
 
   if(startSunrise)
   {
-    if(sunRiseHandle(startSunrise, currentValue))
-      startSunrise = false;
+    if(sunRiseHandle(startSunrise, currentValueRel, timeBuff, sunriseSpeedRel, sunriseValueRel))
+    {
+      if(sunriseSpeedRel > 0)
+      {
+        sunriseSpeedRel = -100.0;
+        sunriseValueRel = 0.0;
+      }
+      else
+      {
+        startSunrise = false;
+      }
+    }
   }
 
-
-  
-
   if (enc1.isRight())
-    currentValue += INCREMENT;
+    currentValueRel += INCREMENT;
 
   if (enc1.isLeft())
-    currentValue -= INCREMENT;
+    currentValueRel -= INCREMENT;
 
   if(enc1.isClick())
   {
-    storedValue = currentValue > 0 ? currentValue : 0;
-    currentValue = currentValue > 0 ? 0 : (storedValue > 0 ? storedValue : (1024 / 2));
+    storedValueRel = currentValueRel > 0 ? currentValueRel : 0;
+    currentValueRel = currentValueRel > 0 ? 0 : (storedValueRel > 0 ? storedValueRel : (100 / 2));
   }
 
-  currentValue = max(min(currentValue, 1023), 0);
+  currentValueRel = max(min(currentValueRel, 100.0), 0.0);
 
-  if(currentValue != oldValue)
+  if(currentValueRel != oldValueRel)
   {
-    analogWrite(MOSFET, currentValue);
-    DPRINTLN("New value = " + String(currentValue));
+    analogWrite(MOSFET, currentValueRel * 1024 / 100);
+    DPRINTLN("New value = " + String(currentValueRel) + "%");
   }
 
-  oldValue = currentValue;
-
-
+  oldValueRel = currentValueRel;
 }
 
