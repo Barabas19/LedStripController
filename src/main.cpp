@@ -17,6 +17,7 @@
 #include <ArduinoOTA.h>
 #include <Time.h>
 #include <NTPClient.h>
+#include <ArduinoJson.h>
 
 #define CLK_PIN1      13
 #define DT_PIN1       12
@@ -31,7 +32,8 @@
 #define INCREMENT     5     // %
 #define MANUAL_SPEED  50    // %/s
 #define STARTUP_SPEED 100
-#define SUNRISE_SPEED 100/1800
+#define SUNRISE_DURA  1800  // s
+#define ALARM_TIME_PROVIDER_URL "http://www.dd.9e.cz/php/requests/get_alarm_time.php"
 
 const char* otaHostName = "WorkspaceLedStrip";
 const char* otaPasotaPasSW_PIN1ord = "esp1901";
@@ -39,11 +41,14 @@ const char* ssid = "SkyNET";
 const char* paspasSW_PIN1ord = "18Kuskov!";
 
 const long utcOffsetInSeconds = 3600;
-char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
-ulong sunriseTime = 0;
+TimeElements alarmTime;
+double sunriseTargetVal, sunriseSpeed;
+uint sunriseDuration = SUNRISE_DURA; // s
+bool sunriseStripEna[2];             // if true, the strip is enabled for sunrise
+bool alarmTimeReq;
 
 struct Strip
 {
@@ -189,6 +194,65 @@ time_t timeSyncNTP()
   return timeClient.getEpochTime();
 }
 
+void setNextAlarmTime(TimeElements& _time, uint8 _hour, uint8 _minute, uint8 _second, uint8 _wday = 0)
+{
+  _time.Hour = _hour;
+  _time.Minute = _minute;
+  _time.Second = _second;
+  _time.Wday = _wday;
+}
+
+void sunriseHandle(time_t _now)
+{
+  TimeElements time_now, time_start;
+  breakTime(_now, time_now);
+  breakTime(makeTime(alarmTime) - sunriseDuration, time_start);
+  sunriseSpeed = sunriseTargetVal / sunriseDuration;
+
+  if(time_now.Hour == time_start.Hour 
+    && time_now.Minute == time_start.Minute
+    && time_now.Second == time_start.Second
+    && (time_now.Wday == time_start.Wday || time_start.Wday == 0))
+  {
+    for(int i=0; i<2; i++)
+    {
+      if(sunriseStripEna[i])
+      {
+        strip[i].changeEna = true;
+        strip[i].speed = sunriseSpeed;
+        strip[i].targetVal = sunriseTargetVal;
+      }
+    }
+  }
+}
+
+void GetSunriseParams(TimeElements& _alarmTime, uint& _duration, double& _value)
+{
+  HTTPClient http;
+  String url = ALARM_TIME_PROVIDER_URL;
+  DPRINTF("*** Reauested url:\n%s\n", url.c_str());
+  http.setURL(url);
+  auto httpCode = http.GET();
+  if(httpCode == HTTP_CODE_OK)
+  {
+    auto payload = http.getString().c_str();
+    DPRINTF("*** Payload:\n%s\n", payload);
+    // payload should be in json format: '{"hour":07,"minute":12,"second":00,"weekday":0,"duration":1800,"value":50.0}'
+    DynamicJsonDocument doc(1024);
+    deserializeJson(doc, payload);
+    _alarmTime.Hour   = doc["hour"];
+    _alarmTime.Minute = doc["minute"];
+    _alarmTime.Second = doc["second"];
+    _alarmTime.Wday   = doc["weekday"];
+    _duration         = doc["duration"];
+    _value            = doc["value"];
+  }
+  else
+  {
+    DPRINTF("Failed to get alarm time\n");
+  }
+  http.end();  
+}
 
 void setup() 
 {
@@ -212,13 +276,26 @@ void setup()
   setSyncProvider(timeSyncNTP);
   setSyncInterval(10);
   InitializeStrips();
+  setNextAlarmTime(alarmTime, 6, 0, 0, 0);
 }
 
 void loop() 
 {
-  now();
+  auto currentTime = now();
   ArduinoOTA.handle(); // OTA
   stripValueHandle(strip[0]);
   stripValueHandle(strip[1]);
+  sunriseHandle(currentTime);
+
+  if(second() == 0)
+    alarmTimeReq = true;
+  else
+  {
+    if(alarmTimeReq)
+    {
+      GetSunriseParams(alarmTime, sunriseDuration, sunriseTargetVal);
+      alarmTimeReq = false;
+    }
+  }
 }
 
