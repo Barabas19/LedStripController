@@ -1,4 +1,4 @@
-#define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
+// #define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
 #ifdef DDEBUG    //Macros are usually in all capital letters.
   #define DPRINT(...)    Serial.print(__VA_ARGS__)     //DPRINT is a macro, debug print
   #define DPRINTLN(...)  Serial.println(__VA_ARGS__)   //DPRINTLN is a macro, debug print with new line
@@ -38,7 +38,7 @@
 const char* otaHostName = "WorkspaceLedStrip";
 const char* otaPasotaPasSW_PIN1ord = "esp1901";
 const char* ssid = "SkyNET";
-const char* paspasSW_PIN1ord = "18Kuskov!";
+const char* password = "18Kuskov!";
 
 const long utcOffsetInSeconds = 3600;
 WiFiUDP ntpUDP;
@@ -229,9 +229,10 @@ void sunriseHandle(time_t _now)
 void GetSunriseParams(TimeElements& _alarmTime, uint& _duration, double& _value)
 {
   HTTPClient http;
+  WiFiClient client;
   String url = ALARM_TIME_PROVIDER_URL;
   DPRINTF("*** Reauested url:\n%s\n", url.c_str());
-  http.setURL(url);
+  http.begin(client, url);
   auto httpCode = http.GET();
   if(httpCode == HTTP_CODE_OK)
   {
@@ -259,7 +260,7 @@ void setup()
   Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
   DPRINTLN("Booting");
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, paspasSW_PIN1ord);
+  WiFi.begin(ssid, password);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) 
   {
     DPRINTLN("Connection Failed! Rebooting...");
