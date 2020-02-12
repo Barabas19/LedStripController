@@ -1,4 +1,4 @@
-// #define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
+#define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
 #ifdef DDEBUG    //Macros are usually in all capital letters.
   #define DPRINT(...)    Serial.print(__VA_ARGS__)     //DPRINT is a macro, debug print
   #define DPRINTLN(...)  Serial.println(__VA_ARGS__)   //DPRINTLN is a macro, debug print with new line
@@ -15,7 +15,6 @@
 #include <ESP8266HTTPClient.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
-#include <Time.h>
 #include <NTPClient.h>
 #include <ArduinoJson.h>
 
@@ -44,11 +43,11 @@ const long utcOffsetInSeconds = 3600;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
-TimeElements alarmTime;
-double sunriseTargetVal, sunriseSpeed;
+ulong alarmTime;
+double sunriseTargetVal;
 uint sunriseDuration = SUNRISE_DURA; // s
 bool sunriseStripEna[2];             // if true, the strip is enabled for sunrise
-bool alarmTimeReq;
+bool alarmTimeReq, sunriseEnable, sunriseEnabled;
 
 struct Strip
 {
@@ -61,7 +60,6 @@ struct Strip
   double storedVal = 0.0;
   double oldVal = 0.0;
   double speed = STARTUP_SPEED;
-  bool changeEna = true;
   bool startUp = true;
 } strip[2];
 
@@ -88,25 +86,35 @@ void InitializeStrips()
 
 void stripEncoderHandle(Strip& _strip)
 {  
+  auto change = false;
   if (_strip.enc.isRight() && !_strip.startUp)
   {
-    _strip.changeEna = true;
-    _strip.targetVal += INCREMENT;
-    _strip.speed = MANUAL_SPEED;
+    if(_strip.speed == MANUAL_SPEED)
+      _strip.targetVal += INCREMENT;
+    else
+      _strip.targetVal = _strip.currentVal + INCREMENT;
+    change = true;
   }
 
   if (_strip.enc.isLeft() && !_strip.startUp)
   {
-    _strip.changeEna = true;
-    _strip.targetVal -= INCREMENT;
-    _strip.speed = -MANUAL_SPEED;
+    if(_strip.speed == -MANUAL_SPEED)
+      _strip.targetVal -= INCREMENT;
+    else
+      _strip.targetVal = _strip.currentVal - INCREMENT;
+    change = true;
   }
 
   if(_strip.enc.isClick() && !_strip.startUp)
   {
-    _strip.storedVal = _strip.targetVal > 0 ? _strip.targetVal : 0;
-    _strip.targetVal = _strip.targetVal > 0 ? 0 : (_strip.storedVal > 0 ? _strip.storedVal : (100 / 2));
+    auto storedValBuff = _strip.storedVal;
+    _strip.storedVal = _strip.currentVal > 0 ? _strip.currentVal : 0;
+    _strip.targetVal = _strip.currentVal > 0 ? 0 : (storedValBuff > 0 ? storedValBuff : (100 / 2));
+    change = true;
   }
+
+  if(change)
+    _strip.speed = MANUAL_SPEED * (_strip.targetVal > _strip.currentVal ? 1 : -1);
 
   _strip.targetVal = max(min(_strip.targetVal, 100.0), 0.0);
 }
@@ -119,25 +127,23 @@ void stripValueHandle(Strip& _strip)
 
   auto valueReached = (_strip.speed > 0 && _strip.currentVal > _strip.targetVal) 
     || (_strip.speed < 0 && _strip.currentVal < _strip.targetVal)
-    || _strip.speed == 0 || _strip.currentVal == _strip.targetVal;
+    || _strip.currentVal == _strip.targetVal;
 
   if(valueReached)
   {
-    _strip.changeEna = false;
-    if(_strip.startUp)
+    _strip.speed = 0;
+    if(_strip.startUp && _strip.targetVal)
     {
-      if(_strip.speed < 0)
-        _strip.startUp = false;
-      else
-      {
-        _strip.changeEna = true;
-        _strip.speed = -STARTUP_SPEED;
-        _strip.targetVal = 0.0;
-      }
+      _strip.speed = -STARTUP_SPEED;
+      _strip.targetVal = 0.0;
+    }
+    else if(_strip.startUp && !_strip.targetVal)
+    {
+      _strip.startUp = false;
     }
   }
   
-  if(_strip.changeEna)
+  if(_strip.speed != 0)
   {
     auto newVal = _strip.currentVal + _strip.speed * cycleTime / 1000;
     _strip.currentVal = max(min(newVal, 100.0), 0.0);
@@ -168,8 +174,10 @@ void OTAini()
 
     // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
     DPRINTLN("Start updating " + type);
+    Serial.end();
   });
    ArduinoOTA.onEnd([]() {
+    Serial.begin(115200);
     DPRINTLN("\nEnd");
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
@@ -187,66 +195,44 @@ void OTAini()
 
 }
 
-time_t timeSyncNTP()
+void sunriseHandle(ulong _now, ulong _alarmTime)
 {
-  timeClient.update();
-  DPRINTLN(timeClient.getFormattedTime());
-  return timeClient.getEpochTime();
-}
+  sunriseEnable = _now <= _alarmTime && _now >= _alarmTime - sunriseDuration;
 
-void setNextAlarmTime(TimeElements& _time, uint8 _hour, uint8 _minute, uint8 _second, uint8 _wday = 0)
-{
-  _time.Hour = _hour;
-  _time.Minute = _minute;
-  _time.Second = _second;
-  _time.Wday = _wday;
-}
-
-void sunriseHandle(time_t _now)
-{
-  TimeElements time_now, time_start;
-  breakTime(_now, time_now);
-  breakTime(makeTime(alarmTime) - sunriseDuration, time_start);
-  sunriseSpeed = sunriseTargetVal / sunriseDuration;
-
-  if(time_now.Hour == time_start.Hour 
-    && time_now.Minute == time_start.Minute
-    && time_now.Second == time_start.Second
-    && (time_now.Wday == time_start.Wday || time_start.Wday == 0))
+  if(sunriseEnable && !sunriseEnabled)
   {
     for(int i=0; i<2; i++)
     {
       if(sunriseStripEna[i])
       {
-        strip[i].changeEna = true;
-        strip[i].speed = sunriseSpeed;
+        strip[i].speed = sunriseTargetVal / sunriseDuration;;
         strip[i].targetVal = sunriseTargetVal;
       }
     }
   }
+  sunriseEnabled = sunriseEnable;
 }
 
-void GetSunriseParams(TimeElements& _alarmTime, uint& _duration, double& _value)
+void GetSunriseParams(ulong& _alarmTime, uint& _duration, double& _value, bool& _enable1, bool& _enable2)
 {
   HTTPClient http;
   WiFiClient client;
   String url = ALARM_TIME_PROVIDER_URL;
-  DPRINTF("*** Reauested url:\n%s\n", url.c_str());
+  DPRINTF("*** Requested url:\n%s\n", url.c_str());
   http.begin(client, url);
   auto httpCode = http.GET();
   if(httpCode == HTTP_CODE_OK)
   {
     auto payload = http.getString().c_str();
     DPRINTF("*** Payload:\n%s\n", payload);
-    // payload should be in json format: '{"hour":07,"minute":12,"second":00,"weekday":0,"duration":1800,"value":50.0}'
+    // payload example: {"alarm":1581119220,"duration":300,"value":100.0,"strip":[1,1]}
     DynamicJsonDocument doc(1024);
     deserializeJson(doc, payload);
-    _alarmTime.Hour   = doc["hour"];
-    _alarmTime.Minute = doc["minute"];
-    _alarmTime.Second = doc["second"];
-    _alarmTime.Wday   = doc["weekday"];
+    _alarmTime        = doc["alarm"];
     _duration         = doc["duration"];
     _value            = doc["value"];
+    _enable1          = doc["strip"][0];
+    _enable2          = doc["strip"][1];
   }
   else
   {
@@ -258,7 +244,7 @@ void GetSunriseParams(TimeElements& _alarmTime, uint& _duration, double& _value)
 void setup() 
 {
   Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
-  DPRINTLN("Booting");
+  DPRINTLN("\nBooting");
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) 
@@ -272,31 +258,28 @@ void setup()
   DPRINTLN("Ready");
   DPRINTLN("IP address: ");
   DPRINTLN(WiFi.localIP());
-
+  // DPRINTLN("done");
+return
   timeClient.begin();
-  setSyncProvider(timeSyncNTP);
-  setSyncInterval(10);
+  timeClient.update();
   InitializeStrips();
-  setNextAlarmTime(alarmTime, 6, 0, 0, 0);
 }
 
 void loop() 
 {
-  auto currentTime = now();
   ArduinoOTA.handle(); // OTA
+return;
   stripValueHandle(strip[0]);
   stripValueHandle(strip[1]);
-  sunriseHandle(currentTime);
-
-  if(second() == 0)
+  if(timeClient.getSeconds() == 0)
     alarmTimeReq = true;
-  else
+  else if(alarmTimeReq)
   {
-    if(alarmTimeReq)
-    {
-      GetSunriseParams(alarmTime, sunriseDuration, sunriseTargetVal);
-      alarmTimeReq = false;
-    }
+    timeClient.update();
+    DPRINTLN(timeClient.getFormattedTime());
+    GetSunriseParams(alarmTime, sunriseDuration, sunriseTargetVal, sunriseStripEna[0], sunriseStripEna[1]);
+    sunriseHandle(timeClient.getEpochTime(), alarmTime);
+    alarmTimeReq = false;
   }
 }
 
