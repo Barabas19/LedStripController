@@ -17,20 +17,22 @@
 #include <ArduinoOTA.h>
 #include <NTPClient.h>
 #include <ArduinoJson.h>
+#include <WiFiClient.h>
 
 #define CLK_PIN1      13
 #define DT_PIN1       12
 #define SW_PIN1       14
 #define MOSFET_PIN1   4
 
-#define CLK_PIN2      2
-#define DT_PIN2       9
+#define CLK_PIN2      3
+#define DT_PIN2       5
 #define SW_PIN2       10
 #define MOSFET_PIN2   15
 
 #define INCREMENT     5     // %
 #define MANUAL_SPEED  50    // %/s
 #define STARTUP_SPEED 100
+#define STARTUP_VALUE 50
 #define SUNRISE_DURA  1800  // s
 #define ALARM_TIME_PROVIDER_URL "http://www.dd.9e.cz/php/requests/get_alarm_time.php"
 
@@ -41,13 +43,16 @@ const char* password = "18Kuskov!";
 
 const long utcOffsetInSeconds = 3600;
 WiFiUDP ntpUDP;
+HTTPClient http;    // !!!!!!! Must be a global variable
+WiFiClient client;  // !!!!!!! Must be a global variable
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+StaticJsonDocument<1024> doc;
 
 ulong alarmTime;
 double sunriseTargetVal;
 uint sunriseDuration = SUNRISE_DURA; // s
 bool sunriseStripEna[2];             // if true, the strip is enabled for sunrise
-bool alarmTimeReq, sunriseEnable, sunriseEnabled;
+bool alarmTimeReq, sunriseEnable, sunriseEnabled, doubleClick;
 
 struct Strip
 {
@@ -56,11 +61,12 @@ struct Strip
   int mosfetPin;
   char name[5];
   double currentVal = 0.0;
-  double targetVal = 100.0;
+  double targetVal = STARTUP_VALUE;
   double storedVal = 0.0;
   double oldVal = 0.0;
   double speed = STARTUP_SPEED;
   bool startUp = true;
+  bool encoderDoubleClicked = false;
 } strip[2];
 
 void InitializeStrips()
@@ -81,13 +87,17 @@ void InitializeStrips()
   strcpy(strip[0].name, "upper");
   strcpy(strip[1].name, "lower");
   DPRINTF("%s and %s strips initialized\n", strip[0].name, strip[1].name);
-  DPRINTF("%s strip speed value: %.2f\n", strip[0].name, strip[0].speed);
 }
 
 void stripEncoderHandle(Strip& _strip)
 {  
+  auto isRight = _strip.enc.isRight();
+  auto isLeft = _strip.enc.isLeft();
+  auto isSingleClick = _strip.enc.isSingle();
+  auto isDoubleClick = _strip.enc.isDouble();
+  
   auto change = false;
-  if (_strip.enc.isRight() && !_strip.startUp)
+  if (isRight && !_strip.startUp)
   {
     if(_strip.speed == MANUAL_SPEED)
       _strip.targetVal += INCREMENT;
@@ -96,7 +106,7 @@ void stripEncoderHandle(Strip& _strip)
     change = true;
   }
 
-  if (_strip.enc.isLeft() && !_strip.startUp)
+  if (isLeft && !_strip.startUp)
   {
     if(_strip.speed == -MANUAL_SPEED)
       _strip.targetVal -= INCREMENT;
@@ -105,13 +115,18 @@ void stripEncoderHandle(Strip& _strip)
     change = true;
   }
 
-  if(_strip.enc.isClick() && !_strip.startUp)
+  if((isSingleClick || _strip.encoderDoubleClicked) && !_strip.startUp)
   {
+    DPRINTF("click\n stored value = %.2f\n current value = %.2f\n", _strip.storedVal, _strip.currentVal);
     auto storedValBuff = _strip.storedVal;
     _strip.storedVal = _strip.currentVal > 0 ? _strip.currentVal : 0;
     _strip.targetVal = _strip.currentVal > 0 ? 0 : (storedValBuff > 0 ? storedValBuff : (100 / 2));
     change = true;
+    _strip.encoderDoubleClicked = false;
   }
+  
+  if(isDoubleClick)
+    doubleClick = true;
 
   if(change)
     _strip.speed = MANUAL_SPEED * (_strip.targetVal > _strip.currentVal ? 1 : -1);
@@ -152,7 +167,7 @@ void stripValueHandle(Strip& _strip)
   if(_strip.currentVal != _strip.oldVal)
   {
     analogWrite(_strip.mosfetPin, _strip.currentVal * 1024 / 100);
-    DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
+    //DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
   }
 
   _strip.oldVal = _strip.currentVal;
@@ -213,32 +228,54 @@ void sunriseHandle(ulong _now, ulong _alarmTime)
   sunriseEnabled = sunriseEnable;
 }
 
-void GetSunriseParams(ulong& _alarmTime, uint& _duration, double& _value, bool& _enable1, bool& _enable2)
+void GetSunriseParams()
 {
-  HTTPClient http;
-  WiFiClient client;
+  
+  String payload = "";
   String url = ALARM_TIME_PROVIDER_URL;
   DPRINTF("*** Requested url:\n%s\n", url.c_str());
-  http.begin(client, url);
-  auto httpCode = http.GET();
-  if(httpCode == HTTP_CODE_OK)
+  if(http.begin(client, url))
   {
-    auto payload = http.getString().c_str();
-    DPRINTF("*** Payload:\n%s\n", payload);
-    // payload example: {"alarm":1581119220,"duration":300,"value":100.0,"strip":[1,1]}
-    DynamicJsonDocument doc(1024);
-    deserializeJson(doc, payload);
-    _alarmTime        = doc["alarm"];
-    _duration         = doc["duration"];
-    _value            = doc["value"];
-    _enable1          = doc["strip"][0];
-    _enable2          = doc["strip"][1];
-  }
-  else
+    auto httpCode = http.GET();
+    DPRINTF("[HTTP] GET... code: %d\n", httpCode);
+    
+    if (httpCode > 0) 
+    {
+      DPRINTF("[HTTP] GET... code: %d\n", httpCode);
+      
+      // file found at server
+      if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) 
+      {
+        payload = http.getString();
+        DPRINTLN(payload);
+      }
+    } 
+    else 
+    {
+      DPRINTF("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  } 
+  else 
   {
-    DPRINTF("Failed to get alarm time\n");
+    DPRINTF("[HTTP} Unable to connect\n");
   }
-  http.end();  
+  
+  if(payload != "")
+  {
+    // payload example: {"alarm":1581119220,"duration":300,"value":100.0,"strip":{"upper":true,"lower":true}}
+    DeserializationError error = deserializeJson(doc, payload);
+    if (error) {
+      DPRINTF("deserializeJson() failed: %s\n", error.c_str());
+      return;
+    }
+    alarmTime         = doc["alarm"];
+    sunriseDuration   = doc["duration"];
+    sunriseTargetVal  = doc["value"];
+    sunriseStripEna[0]= doc["strip"]["upper"];
+    sunriseStripEna[1]= doc["strip"]["lower"];
+    DPRINTF("Json deserialization:\n alarm=%lu\n duration=%d\n value=%.2f\n upper=%d\n lower=%d\n", alarmTime, sunriseDuration, sunriseTargetVal, sunriseStripEna[0], sunriseStripEna[1]);
+  }  
 }
 
 void setup() 
@@ -259,7 +296,7 @@ void setup()
   DPRINTLN("IP address: ");
   DPRINTLN(WiFi.localIP());
   // DPRINTLN("done");
-return
+
   timeClient.begin();
   timeClient.update();
   InitializeStrips();
@@ -268,17 +305,25 @@ return
 void loop() 
 {
   ArduinoOTA.handle(); // OTA
-return;
+
   stripValueHandle(strip[0]);
   stripValueHandle(strip[1]);
+  if(doubleClick)
+  {
+    strip[0].encoderDoubleClicked = true;
+    strip[1].encoderDoubleClicked = true;
+    doubleClick = false;
+  }
+
   if(timeClient.getSeconds() == 0)
     alarmTimeReq = true;
   else if(alarmTimeReq)
   {
     timeClient.update();
-    DPRINTLN(timeClient.getFormattedTime());
-    GetSunriseParams(alarmTime, sunriseDuration, sunriseTargetVal, sunriseStripEna[0], sunriseStripEna[1]);
-    sunriseHandle(timeClient.getEpochTime(), alarmTime);
+    DPRINTF("Formated time: %s\n", timeClient.getFormattedTime().c_str());
+    DPRINTF("Epoch time: %lu\n", timeClient.getEpochTime() - 3600);
+    GetSunriseParams();
+    sunriseHandle(timeClient.getEpochTime() - 3600, alarmTime);
     alarmTimeReq = false;
   }
 }
