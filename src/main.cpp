@@ -19,15 +19,15 @@
 #include <ArduinoJson.h>
 #include <WiFiClient.h>
 
-#define CLK_PIN1      13
-#define DT_PIN1       12
-#define SW_PIN1       14
-#define MOSFET_PIN1   4
+#define CLK_PIN1      13 // D7  YE
+#define DT_PIN1       12 // D6  BU
+#define SW_PIN1       14 // D5  OR
+#define MOSFET_PIN1   4  // D2  
 
-#define CLK_PIN2      3
-#define DT_PIN2       5
-#define SW_PIN2       10
-#define MOSFET_PIN2   15
+#define CLK_PIN2      3  // RX  WH
+#define DT_PIN2       5  // D1  GN
+#define SW_PIN2       10 // SD3 BR
+#define MOSFET_PIN2   15 // D8
 
 #define INCREMENT     5     // %
 #define MANUAL_SPEED  50    // %/s
