@@ -10,7 +10,7 @@
 #endif
 
 #include <Arduino.h>
-#include <GyverEncoder.h>
+// #include <GyverEncoder.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiUdp.h>
@@ -18,16 +18,25 @@
 #include <NTPClient.h>
 #include <ArduinoJson.h>
 #include <WiFiClient.h>
+#include <Adafruit_MCP23017.h>
+#include <TM1637.h>
+#include "MCP_Encoder.h"
 
+// first encoder
 #define CLK_PIN1      13 // D7  YE
 #define DT_PIN1       12 // D6  BU
 #define SW_PIN1       14 // D5  OR
 #define MOSFET_PIN1   4  // D2  
 
+// second encoder
 #define CLK_PIN2      3  // RX  WH
 #define DT_PIN2       5  // D1  GN
 #define SW_PIN2       10 // SD3 BR
 #define MOSFET_PIN2   15 // D8
+
+// display
+#define CLK_PIN_DISP  8
+#define DIO_PIN_DISP  9
 
 #define INCREMENT     5     // %
 #define MANUAL_SPEED  50    // %/s
@@ -47,6 +56,11 @@ HTTPClient http;    // !!!!!!! Must be a global variable
 WiFiClient client;  // !!!!!!! Must be a global variable
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 StaticJsonDocument<1024> doc;
+Adafruit_MCP23017 mcp;
+TM1637 display(CLK_PIN_DISP, DIO_PIN_DISP);
+int8_t digits[] = {0, 1, 2, 3};
+bool showSecondDots = false;
+int buff_seconds;
 
 ulong alarmTime;
 double sunriseTargetVal;
@@ -56,7 +70,7 @@ bool alarmTimeReq, sunriseEnable, sunriseEnabled, doubleClick;
 
 struct Strip
 {
-  Encoder enc;
+  MCP_Encoder enc;
   ulong timeBuff;
   int mosfetPin;
   char name[5];
@@ -71,8 +85,8 @@ struct Strip
 
 void InitializeStrips()
 {
-  strip[0].enc = Encoder(CLK_PIN1, DT_PIN1, SW_PIN1);
-  strip[1].enc = Encoder(CLK_PIN2, DT_PIN2, SW_PIN2);
+  strip[0].enc = MCP_Encoder(mcp, CLK_PIN1, DT_PIN1, SW_PIN1);
+  strip[1].enc = MCP_Encoder(mcp, CLK_PIN2, DT_PIN2, SW_PIN2);
   strip[0].enc.setTickMode(AUTO);
   strip[1].enc.setTickMode(AUTO);
 
@@ -89,7 +103,7 @@ void InitializeStrips()
   DPRINTF("%s and %s strips initialized\n", strip[0].name, strip[1].name);
 }
 
-void stripEncoderHandle(Strip& _strip)
+void StripEncoderHandle(Strip& _strip)
 {  
   auto isRight = _strip.enc.isRight();
   auto isLeft = _strip.enc.isLeft();
@@ -134,7 +148,7 @@ void stripEncoderHandle(Strip& _strip)
   _strip.targetVal = max(min(_strip.targetVal, 100.0), 0.0);
 }
 
-void stripValueHandle(Strip& _strip)
+void StripValueHandle(Strip& _strip)
 {
   auto now = millis();
   auto cycleTime = now - _strip.timeBuff;
@@ -171,7 +185,7 @@ void stripValueHandle(Strip& _strip)
   }
 
   _strip.oldVal = _strip.currentVal;
-  stripEncoderHandle(_strip);
+  StripEncoderHandle(_strip);
 }
 
 void OTAini()
@@ -210,7 +224,7 @@ void OTAini()
 
 }
 
-void sunriseHandle(ulong _now, ulong _alarmTime)
+void SunriseHandle(ulong _now, ulong _alarmTime)
 {
   sunriseEnable = _now <= _alarmTime && _now >= _alarmTime - sunriseDuration;
 
@@ -278,6 +292,26 @@ void GetSunriseParams()
   }  
 }
 
+void DisplayHandle()
+{
+  auto hours = timeClient.getHours();
+  auto minutes = timeClient.getMinutes();
+  auto seconds = timeClient.getSeconds();
+  digits[0] = minutes % 10;
+  digits[1] = minutes / 10;
+  digits[2] = hours % 10;
+  digits[3] = hours / 10;
+
+  if(buff_seconds != seconds)
+  {
+    showSecondDots = !showSecondDots;
+    display.point(showSecondDots);
+  }
+  buff_seconds = seconds;
+
+  display.display(digits);
+}
+
 void setup() 
 {
   Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
@@ -300,14 +334,18 @@ void setup()
   timeClient.begin();
   timeClient.update();
   InitializeStrips();
+
+  display.set();
+  display.init();
 }
 
 void loop() 
 {
   ArduinoOTA.handle(); // OTA
 
-  stripValueHandle(strip[0]);
-  stripValueHandle(strip[1]);
+  StripValueHandle(strip[0]);
+  StripValueHandle(strip[1]);
+  DisplayHandle();
   if(doubleClick)
   {
     strip[0].encoderDoubleClicked = true;
@@ -323,7 +361,7 @@ void loop()
     DPRINTF("Formated time: %s\n", timeClient.getFormattedTime().c_str());
     DPRINTF("Epoch time: %lu\n", timeClient.getEpochTime() - 3600);
     GetSunriseParams();
-    sunriseHandle(timeClient.getEpochTime() - 3600, alarmTime);
+    SunriseHandle(timeClient.getEpochTime() - 3600, alarmTime);
     alarmTimeReq = false;
   }
 }
