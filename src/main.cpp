@@ -23,20 +23,20 @@
 #include "MCP_Encoder.h"
 
 // first encoder
-#define CLK_PIN1      13 // D7  YE
-#define DT_PIN1       12 // D6  BU
-#define SW_PIN1       14 // D5  OR
-#define MOSFET_PIN1   4  // D2  
+#define CLK_PIN1      0   // A0  YE
+#define DT_PIN1       1   // A1  BU
+#define SW_PIN1       2   // A2  OR
+#define MOSFET_PIN1   14  // 
 
 // second encoder
-#define CLK_PIN2      3  // RX  WH
-#define DT_PIN2       5  // D1  GN
-#define SW_PIN2       10 // SD3 BR
-#define MOSFET_PIN2   15 // D8
+#define CLK_PIN2      3   // A3  WH
+#define DT_PIN2       4   // A4  GN
+#define SW_PIN2       5   // A5  BR
+#define MOSFET_PIN2   15  // 
 
 // display
-#define CLK_PIN_DISP  8
-#define DIO_PIN_DISP  9
+#define CLK_PIN_DISP  12
+#define DIO_PIN_DISP  13
 
 #define INCREMENT     5     // %
 #define MANUAL_SPEED  50    // %/s
@@ -181,7 +181,7 @@ void StripValueHandle(Strip& _strip)
   if(_strip.currentVal != _strip.oldVal)
   {
     analogWrite(_strip.mosfetPin, _strip.currentVal * 1024 / 100);
-    //DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
+    DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
   }
 
   _strip.oldVal = _strip.currentVal;
@@ -312,6 +312,8 @@ void DisplayHandle()
   display.display(digits);
 }
 
+bool mcp7pinstate;
+
 void setup() 
 {
   Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
@@ -333,6 +335,10 @@ void setup()
 
   timeClient.begin();
   timeClient.update();
+
+  mcp.begin();
+  mcp.pinMode(6, INPUT);
+
   InitializeStrips();
 
   display.set();
@@ -364,5 +370,13 @@ void loop()
     SunriseHandle(timeClient.getEpochTime() - 3600, alarmTime);
     alarmTimeReq = false;
   }
+
+  if(mcp.digitalRead(6) != mcp7pinstate)
+    {
+      DPRINT(millis());
+      DPRINTLN(" WOW");
+    }
+
+    mcp7pinstate = mcp.digitalRead(6);
 }
 
