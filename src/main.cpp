@@ -1,4 +1,4 @@
-#define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
+//#define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
 #ifdef DDEBUG    //Macros are usually in all capital letters.
   #define DPRINT(...)    Serial.print(__VA_ARGS__)     //DPRINT is a macro, debug print
   #define DPRINTLN(...)  Serial.println(__VA_ARGS__)   //DPRINTLN is a macro, debug print with new line
@@ -18,41 +18,53 @@
 #include <NTPClient.h>
 #include <ArduinoJson.h>
 #include <WiFiClient.h>
+#include <TM1637Display.h>
 
-#define CLK_PIN1      13 // D7  YE
-#define DT_PIN1       12 // D6  BU
-#define SW_PIN1       14 // D5  OR
-#define MOSFET_PIN1   4  // D2  
+#define CLK_PIN1      3  // RX  WH
+#define DT_PIN1       5  // D1  GN
+#define SW_PIN1       2  // D4  BR
+#define MOSFET_PIN1   15 // D8
 
-#define CLK_PIN2      3  // RX  WH
-#define DT_PIN2       5  // D1  GN
-#define SW_PIN2       10 // SD3 BR
-#define MOSFET_PIN2   15 // D8
+#define CLK_PIN2      13 // D7  YE
+#define DT_PIN2       12 // D6  BU
+#define SW_PIN2       14 // D5  OR
+#define MOSFET_PIN2   4  // D2  
+
+#define DISP_CLK_PIN  0  // D3
+#define DISP_DIO_PIN  1  // TX
 
 #define INCREMENT     5     // %
 #define MANUAL_SPEED  50    // %/s
 #define STARTUP_SPEED 100
 #define STARTUP_VALUE 50
 #define SUNRISE_DURA  1800  // s
-#define ALARM_TIME_PROVIDER_URL "http://www.dd.9e.cz/php/requests/get_alarm_time.php"
+#define ALARM_TIME_PROVIDER_URL   "http://www.dd.9e.cz/php/requests/get_alarm_time.php"
+#define SUNRISE_PROVIDER_URL      "http://api.sunrise-sunset.org/json?lat=49.7447811&lng=13.3764689"
 
 const char* otaHostName = "WorkspaceLedStrip";
-const char* otaPasotaPasSW_PIN1ord = "esp1901";
-const char* ssid = "SkyNET";
-const char* password = "18Kuskov!";
+const char* otaPassword = "esp1901";
+const char* ssid        = "SkyNET";
+const char* password    = "18Kuskov!";
 
 const long utcOffsetInSeconds = 3600;
 WiFiUDP ntpUDP;
 HTTPClient http;    // !!!!!!! Must be a global variable
 WiFiClient client;  // !!!!!!! Must be a global variable
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
-StaticJsonDocument<1024> doc;
+StaticJsonDocument<1024> alarmJsonDoc, sunriseJsonDoc;
+
+bool use_display = true;
+TM1637Display display(DISP_CLK_PIN, DISP_DIO_PIN);
+uint8_t display_data[] = { 0xff, 0xff, 0xff, 0xff };
+int sec_buff = 0;
+bool show_dot = false;
 
 ulong alarmTime;
 double sunriseTargetVal;
 uint sunriseDuration = SUNRISE_DURA; // s
 bool sunriseStripEna[2];             // if true, the strip is enabled for sunrise
-bool alarmTimeReq, sunriseEnable, sunriseEnabled, doubleClick;
+bool alarmTimeReq, sunriseEnable, sunriseEnabled, doubleClick, twilightReq;
+int sunrise_begin, sunrise_end, sunset_begin, sunset_end;
 
 struct Strip
 {
@@ -102,7 +114,7 @@ void stripEncoderHandle(Strip& _strip)
     if(_strip.speed == MANUAL_SPEED)
       _strip.targetVal += INCREMENT;
     else
-      _strip.targetVal = _strip.currentVal + INCREMENT;
+      _strip.targetVal = _strip.targetVal + INCREMENT;
     change = true;
   }
 
@@ -111,7 +123,7 @@ void stripEncoderHandle(Strip& _strip)
     if(_strip.speed == -MANUAL_SPEED)
       _strip.targetVal -= INCREMENT;
     else
-      _strip.targetVal = _strip.currentVal - INCREMENT;
+      _strip.targetVal = _strip.targetVal - INCREMENT;
     change = true;
   }
 
@@ -132,6 +144,16 @@ void stripEncoderHandle(Strip& _strip)
     _strip.speed = MANUAL_SPEED * (_strip.targetVal > _strip.currentVal ? 1 : -1);
 
   _strip.targetVal = max(min(_strip.targetVal, 100.0), 0.0);
+
+  if(isRight)
+    DPRINTF("%s is right.\n", _strip.name);
+  if(isLeft)
+    DPRINTF("%s is left.\n", _strip.name);
+  if(isSingleClick)
+    DPRINTF("%s is click.\n", _strip.name);
+  if(change)
+    DPRINTF("%s speed = %.2f, target_value = %.2f.\n", _strip.name, _strip.speed, _strip.targetVal);
+  
 }
 
 void stripValueHandle(Strip& _strip)
@@ -167,7 +189,7 @@ void stripValueHandle(Strip& _strip)
   if(_strip.currentVal != _strip.oldVal)
   {
     analogWrite(_strip.mosfetPin, _strip.currentVal * 1024 / 100);
-    //DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
+    // DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
   }
 
   _strip.oldVal = _strip.currentVal;
@@ -178,7 +200,7 @@ void OTAini()
 {
   ArduinoOTA.setPort(8266);
   ArduinoOTA.setHostname(otaHostName);
-  ArduinoOTA.setPassword(otaPasotaPasSW_PIN1ord);
+  ArduinoOTA.setPassword(otaPassword);
 
   ArduinoOTA.onStart([]() {
     String type;
@@ -189,11 +211,15 @@ void OTAini()
 
     // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
     DPRINTLN("Start updating " + type);
-    Serial.end();
+    #ifdef DDEBUG
+      Serial.end();
+    #endif
   });
    ArduinoOTA.onEnd([]() {
-    Serial.begin(115200);
-    DPRINTLN("\nEnd");
+    #ifdef DDEBUG
+      Serial.begin(115200);
+      DPRINTLN("\nEnd");
+    #endif
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     DPRINTF("Progress: %u%%\r", (progress / (total / 100)));
@@ -228,13 +254,11 @@ void sunriseHandle(ulong _now, ulong _alarmTime)
   sunriseEnabled = sunriseEnable;
 }
 
-void GetSunriseParams()
+String GetHttp(String _url)
 {
-  
   String payload = "";
-  String url = ALARM_TIME_PROVIDER_URL;
-  DPRINTF("*** Requested url:\n%s\n", url.c_str());
-  if(http.begin(client, url))
+  DPRINTF("*** Requested url:\n%s\n", _url.c_str());
+  if(http.begin(client, _url))
   {
     auto httpCode = http.GET();
     DPRINTF("[HTTP] GET... code: %d\n", httpCode);
@@ -260,27 +284,111 @@ void GetSunriseParams()
   {
     DPRINTF("[HTTP} Unable to connect\n");
   }
-  
+  return payload;
+}
+
+void GetSunriseParams()
+{
+  String payload = GetHttp(ALARM_TIME_PROVIDER_URL);
   if(payload != "")
   {
     // payload example: {"alarm":1581119220,"duration":300,"value":100.0,"strip":{"upper":true,"lower":true}}
-    DeserializationError error = deserializeJson(doc, payload);
+    DeserializationError error = deserializeJson(alarmJsonDoc, payload);
     if (error) {
       DPRINTF("deserializeJson() failed: %s\n", error.c_str());
       return;
     }
-    alarmTime         = doc["alarm"];
-    sunriseDuration   = doc["duration"];
-    sunriseTargetVal  = doc["value"];
-    sunriseStripEna[0]= doc["strip"]["upper"];
-    sunriseStripEna[1]= doc["strip"]["lower"];
+    alarmTime         = alarmJsonDoc["alarm"];
+    sunriseDuration   = alarmJsonDoc["duration"];
+    sunriseTargetVal  = alarmJsonDoc["value"];
+    sunriseStripEna[0]= alarmJsonDoc["strip"]["upper"];
+    sunriseStripEna[1]= alarmJsonDoc["strip"]["lower"];
     DPRINTF("Json deserialization:\n alarm=%lu\n duration=%d\n value=%.2f\n upper=%d\n lower=%d\n", alarmTime, sunriseDuration, sunriseTargetVal, sunriseStripEna[0], sunriseStripEna[1]);
   }  
 }
 
+void DisplayHandle()
+{
+  auto seconds = timeClient.getSeconds();
+  auto minutes = timeClient.getMinutes();
+  auto hours   = timeClient.getHours();
+  
+  if(seconds != sec_buff)
+  {
+    show_dot = !show_dot;
+  }
+  sec_buff = seconds;
+
+  auto time = hours * 100 + minutes;
+  display.showNumberDecEx(time, show_dot ? 0b01000000 : 0b00000000, time < 100, time < 100 ? 3 : 4, 0);
+
+  uint8_t brightness = 1;
+  if((time > sunrise_end && time < sunset_begin) || strip[0].currentVal > 10 || strip[1].currentVal > 10)
+  {
+    brightness = 7;
+  }
+  else if(time > sunrise_begin && time < sunrise_end)
+  {
+    auto sunrise_length = sunrise_end - sunrise_begin;
+    brightness = (time - sunrise_begin) / (sunrise_length / 7);
+  }
+  else if(time > sunset_begin && time < sunset_end)
+  {
+    auto sunset_length = sunset_end - sunset_begin;
+    brightness = (time - sunset_begin) / (sunset_length / 7);
+  }
+  brightness = max(min(brightness, (uint8_t)7), (uint8_t)0);
+
+  display.setBrightness(brightness);
+}
+
+void GetTwilight()
+{
+  String payload = GetHttp(SUNRISE_PROVIDER_URL);
+  if(payload != "")
+  {
+    // payload example: { "results":{"sunrise":"5:32:38 AM","sunset":"5:01:25 PM","solar_noon":"11:17:01 AM","day_length":"11:28:47",
+    //                    "civil_twilight_begin":"5:00:42 AM","civil_twilight_end":"5:33:20 PM",
+    //                    "nautical_twilight_begin":"4:23:27 AM","nautical_twilight_end":"6:10:35 PM",
+    //                    "astronomical_twilight_begin":"3:45:34 AM","astronomical_twilight_end":"6:48:28 PM"},"status":"OK"}
+    DeserializationError error = deserializeJson(sunriseJsonDoc, payload);
+    if (error) {
+      DPRINTF("deserializeJson() failed: %s\n", error.c_str());
+      return;
+    }
+    String twilight_begin = sunriseJsonDoc["results"]["civil_twilight_begin"];
+    String sunrise        = sunriseJsonDoc["results"]["sunrise"];
+    String sunset         = sunriseJsonDoc["results"]["sunset"];
+    String twilight_end   = sunriseJsonDoc["results"]["civil_twilight_end"];
+
+    DPRINTF("Json deserialization:\n twilight_begin=%s\n sunrise=%s\n sunset=%s\n twilight_end=%s\n", 
+      twilight_begin.c_str(), sunrise.c_str(), sunset.c_str(), twilight_end.c_str());
+
+    sunrise_begin   = twilight_begin.substring(0,1).toInt() * 100 + twilight_begin.substring(2,4).toInt();
+    sunrise_end     = sunrise.substring(0,1).toInt() * 100 + sunrise.substring(2,4).toInt();
+    if(sunset.length() > 10)
+      sunset_begin = sunset.substring(0,2).toInt() * 100 + sunset.substring(3,5).toInt();
+    else
+      sunset_begin = sunset.substring(0,1).toInt() * 100 + sunset.substring(2,4).toInt();
+    if(twilight_end.length() > 10)
+      sunset_end = twilight_end.substring(0,2).toInt() * 100 + twilight_end.substring(3,5).toInt();
+    else
+      sunset_end = twilight_end.substring(0,1).toInt() * 100 + twilight_end.substring(2,4).toInt();
+
+    sunset_begin += 1200;
+    sunset_end += 1200;
+    
+    DPRINTF("Times convertion:\n sunrise_begin=%d\n sunrise_end=%d\n sunset_begin=%d\n sunset_end=%d\n", 
+      sunrise_begin, sunrise_end, sunset_begin, sunset_end);
+  } 
+}
+
 void setup() 
 {
-  Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
+  #ifdef DDEBUG
+    Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
+    use_display = false;
+  #endif
   DPRINTLN("\nBooting");
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -300,6 +408,13 @@ void setup()
   timeClient.begin();
   timeClient.update();
   InitializeStrips();
+  GetTwilight();
+
+  if(use_display)
+  {
+    display.setBrightness(0x0f);
+    display.setSegments(display_data);
+  }
 }
 
 void loop() 
@@ -326,5 +441,15 @@ void loop()
     sunriseHandle(timeClient.getEpochTime() - 3600, alarmTime);
     alarmTimeReq = false;
   }
+  if(timeClient.getMinutes() == 0)
+    twilightReq = true;
+  else if(twilightReq)
+  {
+    GetTwilight();
+    twilightReq = false;
+  }
+
+  if(use_display)
+    DisplayHandle();
 }
 
