@@ -1,4 +1,4 @@
-//#define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
+#define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
 #ifdef DDEBUG    //Macros are usually in all capital letters.
   #define DPRINT(...)    Serial.print(__VA_ARGS__)     //DPRINT is a macro, debug print
   #define DPRINTLN(...)  Serial.println(__VA_ARGS__)   //DPRINTLN is a macro, debug print with new line
@@ -48,7 +48,6 @@ const char* password    = "18Kuskov!";
 
 const long utcOffsetInSeconds = 3600;
 WiFiUDP ntpUDP;
-HTTPClient http;    // !!!!!!! Must be a global variable
 WiFiClient client;  // !!!!!!! Must be a global variable
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 StaticJsonDocument<1024> alarmJsonDoc, sunriseJsonDoc;
@@ -258,8 +257,12 @@ String GetHttp(String _url)
 {
   String payload = "";
   DPRINTF("*** Requested url:\n%s\n", _url.c_str());
+  HTTPClient http;
   if(http.begin(client, _url))
   {
+    if(http.connected())
+      DPRINTLN("http connected.");
+    delay(500);
     auto httpCode = http.GET();
     DPRINTF("[HTTP] GET... code: %d\n", httpCode);
     
@@ -377,6 +380,12 @@ void GetTwilight()
 
     sunset_begin += 1200;
     sunset_end += 1200;
+
+    // Correct time zone
+    sunset_begin += 100;
+    sunset_end += 100;
+    sunrise_begin += 100;
+    sunrise_end += 100;
     
     DPRINTF("Times convertion:\n sunrise_begin=%d\n sunrise_end=%d\n sunset_begin=%d\n sunset_end=%d\n", 
       sunrise_begin, sunrise_end, sunset_begin, sunset_end);
@@ -403,11 +412,12 @@ void setup()
   DPRINTLN("Ready");
   DPRINTLN("IP address: ");
   DPRINTLN(WiFi.localIP());
-  // DPRINTLN("done");
+  DPRINTLN("done");
 
   timeClient.begin();
   timeClient.update();
   InitializeStrips();
+  GetSunriseParams();
   GetTwilight();
 
   if(use_display)
@@ -436,7 +446,7 @@ void loop()
   {
     timeClient.update();
     DPRINTF("Formated time: %s\n", timeClient.getFormattedTime().c_str());
-    DPRINTF("Epoch time: %lu\n", timeClient.getEpochTime() - 3600);
+    // DPRINTF("Epoch time: %lu\n", timeClient.getEpochTime() - 3600);
     GetSunriseParams();
     sunriseHandle(timeClient.getEpochTime() - 3600, alarmTime);
     alarmTimeReq = false;
