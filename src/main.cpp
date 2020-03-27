@@ -40,6 +40,7 @@
 #define SUNRISE_DURA  1800  // s
 #define ALARM_TIME_PROVIDER_URL   "http://www.dd.9e.cz/php/requests/get_alarm_time.php"
 #define SUNRISE_PROVIDER_URL      "http://api.sunrise-sunset.org/json?lat=49.7447811&lng=13.3764689"
+#define WEATHER_PROVIDER_URL      "http://api.openweathermap.org/data/2.5/weather?q=Plzen&units=metric&appid=2340d4e1dea5f52590c8421f9b472f93"
 
 const char* otaHostName = "WorkspaceLedStrip";
 const char* otaPassword = "esp1901";
@@ -50,7 +51,7 @@ const long utcOffsetInSeconds = 3600;
 WiFiUDP ntpUDP;
 WiFiClient client;  // !!!!!!! Must be a global variable
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
-StaticJsonDocument<1024> alarmJsonDoc, sunriseJsonDoc;
+StaticJsonDocument<1024> alarmJsonDoc, sunriseJsonDoc, weaterJsonDoc;
 
 bool use_display = true;
 TM1637Display display(DISP_CLK_PIN, DISP_DIO_PIN);
@@ -62,8 +63,10 @@ ulong alarmTime;
 double sunriseTargetVal;
 uint sunriseDuration = SUNRISE_DURA; // s
 bool sunriseStripEna[2];             // if true, the strip is enabled for sunrise
-bool alarmTimeReq, sunriseEnable, sunriseEnabled, doubleClick, twilightReq;
+bool alarmTimeReq, sunriseEnable, sunriseEnabled, doubleClick, twilightReq, weatherReq;
 int sunrise_begin, sunrise_end, sunset_begin, sunset_end;
+
+int temperature;
 
 struct Strip
 {
@@ -290,7 +293,7 @@ String GetHttp(String _url)
   return payload;
 }
 
-void GetSunriseParams()
+void UpdateSunriseParams()
 {
   String payload = GetHttp(ALARM_TIME_PROVIDER_URL);
   if(payload != "")
@@ -315,15 +318,32 @@ void DisplayHandle()
   auto seconds = timeClient.getSeconds();
   auto minutes = timeClient.getMinutes();
   auto hours   = timeClient.getHours();
-  
-  if(seconds != sec_buff)
-  {
-    show_dot = !show_dot;
-  }
-  sec_buff = seconds;
-
   auto time = hours * 100 + minutes;
-  display.showNumberDecEx(time, show_dot ? 0b01000000 : 0b00000000, time < 100, time < 100 ? 3 : 4, 0);
+  
+  if(seconds % 10 < 7) // in every 0-6 second show time, else show temperature
+  {
+    if(seconds != sec_buff)
+    {
+      show_dot = !show_dot;
+    }
+    sec_buff = seconds;
+
+    display.showNumberDecEx(time, show_dot ? 0b01000000 : 0b00000000, time < 100, time < 100 ? 3 : 4, 0);
+  }
+  else
+  {
+    String temp = String(temperature) + "C";
+    uint8_t data[] = { 0x00, 0x00, 0x00, 0x00 };
+    uint8_t minus = 0b01000000; // '-'
+    uint8_t C = 0b00111001; // 'C'
+    if(temperature >= 10 || temperature <= -10)
+      data[1] = temperature > 0 ? display.encodeDigit(temperature / 10) : display.encodeDigit(temperature / -10);
+    data[2] = temperature > 0 ? display.encodeDigit(temperature % 10) : display.encodeDigit(temperature % -10);
+    data[3] = C;
+    if(temperature < 0)
+      data[temperature <= -10 ? 0 : 1] = minus;
+    display.setSegments(data);    
+  }
 
   uint8_t brightness = 1;
   if((time > sunrise_end && time < sunset_begin) || strip[0].currentVal > 10 || strip[1].currentVal > 10)
@@ -345,7 +365,7 @@ void DisplayHandle()
   display.setBrightness(brightness);
 }
 
-void GetTwilight()
+void UpdateTwilight()
 {
   String payload = GetHttp(SUNRISE_PROVIDER_URL);
   if(payload != "")
@@ -392,6 +412,26 @@ void GetTwilight()
   } 
 }
 
+void UpdateCurrentTemperature()
+{
+  String payload = GetHttp(WEATHER_PROVIDER_URL);
+  if(payload != "")
+  {
+    // payload example: {"coord":{"lon":13.38,"lat":49.75},"weather":[{"id":800,"main":"Clear","description":"clear sky","icon":"01d"}],
+    //                    "base":"stations","main":{"temp":12.11,"feels_like":4.58,"temp_min":12,"temp_max":12.22,"pressure":1019,"humidity":40},
+    //                    "visibility":10000,"wind":{"speed":7.7,"deg":110},"clouds":{"all":7},"dt":1585304554,"sys":{"type":1,"id":6839,
+    //                    "country":"CZ","sunrise":1585284805,"sunset":1585330192},"timezone":3600,"id":3068160,"name":"Pilsen","cod":200}
+    DeserializationError error = deserializeJson(weaterJsonDoc, payload);
+    if (error) {
+      DPRINTF("deserializeJson() failed: %s\n", error.c_str());
+      return;
+    }
+    String temp = weaterJsonDoc["main"]["temp"];
+    temperature = (int)temp.toFloat();
+    DPRINTF("Json deserialization:\n alarm=%lu\n duration=%d\n value=%.2f\n upper=%d\n lower=%d\n", alarmTime, sunriseDuration, sunriseTargetVal, sunriseStripEna[0], sunriseStripEna[1]);
+  }  
+}
+
 void setup() 
 {
   #ifdef DDEBUG
@@ -417,8 +457,9 @@ void setup()
   timeClient.begin();
   timeClient.update();
   InitializeStrips();
-  GetSunriseParams();
-  GetTwilight();
+  UpdateSunriseParams();
+  UpdateTwilight();
+  UpdateCurrentTemperature();
 
   if(use_display)
   {
@@ -446,16 +487,24 @@ void loop()
   {
     timeClient.update();
     DPRINTF("Formated time: %s\n", timeClient.getFormattedTime().c_str());
-    // DPRINTF("Epoch time: %lu\n", timeClient.getEpochTime() - 3600);
-    GetSunriseParams();
+    UpdateSunriseParams();
     sunriseHandle(timeClient.getEpochTime() - 3600, alarmTime);
     alarmTimeReq = false;
   }
+
+  if(timeClient.getMinutes() % 10 == 0)
+    weatherReq = true;
+  else if(weatherReq)
+  {
+    UpdateCurrentTemperature();
+    weatherReq = false;
+  }
+
   if(timeClient.getMinutes() == 0)
     twilightReq = true;
   else if(twilightReq)
   {
-    GetTwilight();
+    UpdateTwilight();
     twilightReq = false;
   }
 
