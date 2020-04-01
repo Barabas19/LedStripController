@@ -1,14 +1,8 @@
-//#define DDEBUG   //If you comment this line, the DPRINT & DPRINTLN lines are defined as blank.
-#ifdef DDEBUG    //Macros are usually in all capital letters.
-  #define DPRINT(...)    Serial.print(__VA_ARGS__)     //DPRINT is a macro, debug print
-  #define DPRINTLN(...)  Serial.println(__VA_ARGS__)   //DPRINTLN is a macro, debug print with new line
-  #define DPRINTF(...)   Serial.printf(__VA_ARGS__)
-#else
-  #define DPRINT(...)     //now defines a blank line
-  #define DPRINTLN(...)   //now defines a blank line
-  #define DPRINTF(...)
-#endif
+//#define DEBUG_PORT Serial
+#define DEBUG_UDP debug_udp_client
+#define DEBUG_UDP_PORT 24
 
+#include <debug.h>
 #include <Arduino.h>
 #include <GyverEncoder.h>
 #include <ESP8266WiFi.h>
@@ -35,22 +29,28 @@
 
 #define INCREMENT     5     // %
 #define MANUAL_SPEED  50    // %/s
-#define STARTUP_SPEED 100
-#define STARTUP_VALUE 50
+#define STARTUP_SPEED 50
+#define STARTUP_VALUE 30
 #define SUNRISE_DURA  1800  // s
 #define ALARM_TIME_PROVIDER_URL   "http://www.dd.9e.cz/php/requests/get_alarm_time.php"
 #define SUNRISE_PROVIDER_URL      "http://api.sunrise-sunset.org/json?lat=49.7447811&lng=13.3764689"
 #define WEATHER_PROVIDER_URL      "http://api.openweathermap.org/data/2.5/weather?q=Plzen&units=metric&appid=2340d4e1dea5f52590c8421f9b472f93"
+#define NTP_SERVER                "tak.cesnet.cz"
+#define SUMMER_TIME
 
 const char* otaHostName = "WorkspaceLedStrip";
 const char* otaPassword = "esp1901";
 const char* ssid        = "SkyNET";
 const char* password    = "18Kuskov!";
 
-const long utcOffsetInSeconds = 3600;
+const long utcOffsetInSeconds = 3600
+#ifdef SUMMER_TIME
+  + 3600
+#endif
+;
 WiFiUDP ntpUDP;
 WiFiClient client;  // !!!!!!! Must be a global variable
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+NTPClient timeClient(ntpUDP, NTP_SERVER, utcOffsetInSeconds);
 StaticJsonDocument<1024> alarmJsonDoc, sunriseJsonDoc, weaterJsonDoc;
 
 bool use_display = true;
@@ -71,7 +71,7 @@ int temperature;
 struct Strip
 {
   Encoder enc;
-  ulong timeBuff;
+  ulong timeBuff = 0;
   int mosfetPin;
   char name[5];
   double currentVal = 0.0;
@@ -90,8 +90,8 @@ void InitializeStrips()
   strip[0].enc.setTickMode(AUTO);
   strip[1].enc.setTickMode(AUTO);
 
-  strip[0].timeBuff = millis();
-  strip[1].timeBuff = millis();
+  // strip[0].timeBuff = millis();
+  // strip[1].timeBuff = millis();
 
   strip[0].mosfetPin = MOSFET_PIN1;
   strip[1].mosfetPin = MOSFET_PIN2;
@@ -105,27 +105,27 @@ void InitializeStrips()
 
 void stripEncoderHandle(Strip& _strip)
 {  
-  auto isRight = _strip.enc.isRight();
-  auto isLeft = _strip.enc.isLeft();
+  auto isRight = _strip.enc.isFastR() || _strip.enc.isRight();
+  auto isLeft = _strip.enc.isFastL() || _strip.enc.isLeft();
   auto isSingleClick = _strip.enc.isSingle();
   auto isDoubleClick = _strip.enc.isDouble();
   
   auto change = false;
   if (isRight && !_strip.startUp)
   {
-    if(_strip.speed == MANUAL_SPEED)
-      _strip.targetVal += INCREMENT;
+    if(_strip.speed == MANUAL_SPEED && _strip.currentVal < 20)
+      _strip.targetVal += INCREMENT / 2;
     else
-      _strip.targetVal = _strip.targetVal + INCREMENT;
+      _strip.targetVal += INCREMENT;
     change = true;
   }
 
   if (isLeft && !_strip.startUp)
   {
-    if(_strip.speed == -MANUAL_SPEED)
-      _strip.targetVal -= INCREMENT;
+    if(_strip.speed == -MANUAL_SPEED && _strip.currentVal < 20)
+      _strip.targetVal -= INCREMENT / 2;
     else
-      _strip.targetVal = _strip.targetVal - INCREMENT;
+      _strip.targetVal -= INCREMENT;
     change = true;
   }
 
@@ -147,14 +147,14 @@ void stripEncoderHandle(Strip& _strip)
 
   _strip.targetVal = max(min(_strip.targetVal, 100.0), 0.0);
 
-  if(isRight)
-    DPRINTF("%s is right.\n", _strip.name);
-  if(isLeft)
-    DPRINTF("%s is left.\n", _strip.name);
-  if(isSingleClick)
-    DPRINTF("%s is click.\n", _strip.name);
-  if(change)
-    DPRINTF("%s speed = %.2f, target_value = %.2f.\n", _strip.name, _strip.speed, _strip.targetVal);
+  // if(isRight)
+  //   DPRINTF("%s is right.\n", _strip.name);
+  // if(isLeft)
+  //   DPRINTF("%s is left.\n", _strip.name);
+  // if(isSingleClick)
+  //   DPRINTF("%s is click.\n", _strip.name);
+  // if(change)
+  //   DPRINTF("%s speed = %.2f, target_value = %.2f.\n", _strip.name, _strip.speed, _strip.targetVal);
   
 }
 
@@ -182,7 +182,7 @@ void stripValueHandle(Strip& _strip)
     }
   }
   
-  if(_strip.speed != 0)
+  if(_strip.speed != 0 && cycleTime != now)
   {
     auto newVal = _strip.currentVal + _strip.speed * cycleTime / 1000;
     _strip.currentVal = max(min(newVal, 100.0), 0.0);
@@ -191,7 +191,7 @@ void stripValueHandle(Strip& _strip)
   if(_strip.currentVal != _strip.oldVal)
   {
     analogWrite(_strip.mosfetPin, _strip.currentVal * 1024 / 100);
-    // DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
+    DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
   }
 
   _strip.oldVal = _strip.currentVal;
@@ -203,37 +203,6 @@ void OTAini()
   ArduinoOTA.setPort(8266);
   ArduinoOTA.setHostname(otaHostName);
   ArduinoOTA.setPassword(otaPassword);
-
-  ArduinoOTA.onStart([]() {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH)
-      type = "sketch";
-    else // U_SPIFFS
-      type = "filesystem";
-
-    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-    DPRINTLN("Start updating " + type);
-    #ifdef DDEBUG
-      Serial.end();
-    #endif
-  });
-   ArduinoOTA.onEnd([]() {
-    #ifdef DDEBUG
-      Serial.begin(115200);
-      DPRINTLN("\nEnd");
-    #endif
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    DPRINTF("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    DPRINTF("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) DPRINTLN("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) DPRINTLN("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) DPRINTLN("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) DPRINTLN("Receive Failed");
-    else if (error == OTA_END_ERROR) DPRINTLN("End Failed");
-  });
   ArduinoOTA.begin();
 
 }
@@ -332,13 +301,13 @@ void DisplayHandle()
   }
   else
   {
-    String temp = String(temperature) + "C";
     uint8_t data[] = { 0x00, 0x00, 0x00, 0x00 };
     uint8_t minus = 0b01000000; // '-'
     uint8_t C = 0b00111001; // 'C'
-    if(temperature >= 10 || temperature <= -10)
-      data[1] = temperature > 0 ? display.encodeDigit(temperature / 10) : display.encodeDigit(temperature / -10);
-    data[2] = temperature > 0 ? display.encodeDigit(temperature % 10) : display.encodeDigit(temperature % -10);
+    int temp = temperature > 0 ? temperature : -temperature;
+    if(temp >= 10)
+      data[1] = display.encodeDigit(temp / 10);
+    data[2] = display.encodeDigit(temp % 10);
     data[3] = C;
     if(temperature < 0)
       data[temperature <= -10 ? 0 : 1] = minus;
@@ -427,28 +396,31 @@ void UpdateCurrentTemperature()
       return;
     }
     String temp = weaterJsonDoc["main"]["temp"];
-    temperature = (int)temp.toFloat();
-    DPRINTF("Json deserialization:\n alarm=%lu\n duration=%d\n value=%.2f\n upper=%d\n lower=%d\n", alarmTime, sunriseDuration, sunriseTargetVal, sunriseStripEna[0], sunriseStripEna[1]);
+    temperature = (int)round(temp.toFloat());
+    DPRINTF("Json deserialization:\n temperature=%d\n", temperature);
   }  
 }
 
 void setup() 
 {
-  #ifdef DDEBUG
-    Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
+  #ifdef DEBUG_PORT
+    DEBUG_PORT.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
     use_display = false;
+    DPRINTLN("\nBooting");
   #endif
-  DPRINTLN("\nBooting");
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) 
   {
-    DPRINTLN("Connection Failed! Rebooting...");
+    #ifdef DEBUG_PORT
+      DPRINTLN("Connection Failed! Rebooting...");
+    #endif
     delay(5000);
     ESP.restart();
   }
+
   OTAini();
-  
+
   DPRINTLN("Ready");
   DPRINTLN("IP address: ");
   DPRINTLN(WiFi.localIP());
