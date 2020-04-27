@@ -296,8 +296,9 @@ void DisplayHandle()
       show_dot = !show_dot;
     }
     sec_buff = seconds;
-
-    display.showNumberDecEx(time, show_dot ? 0b01000000 : 0b00000000, time < 100, time < 100 ? 3 : 4, 0);
+    auto time_length = time < 100 ? 3 : 4;
+    time_length = time < 10 ? 2 : time_length;
+    display.showNumberDecEx(time, show_dot ? 0b01000000 : 0b00000000, time < 100, time_length, 0);
   }
   else
   {
