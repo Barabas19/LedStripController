@@ -56,8 +56,6 @@ StaticJsonDocument<1024> alarmJsonDoc, sunriseJsonDoc, weaterJsonDoc;
 bool use_display = true;
 TM1637Display display(DISP_CLK_PIN, DISP_DIO_PIN);
 uint8_t display_data[] = { 0xff, 0xff, 0xff, 0xff };
-int sec_buff = 0;
-bool show_dot = false;
 
 ulong alarmTime;
 double sunriseTargetVal;
@@ -288,17 +286,18 @@ void DisplayHandle()
   auto minutes = timeClient.getMinutes();
   auto hours   = timeClient.getHours();
   auto time = hours * 100 + minutes;
+  static uint64_t show_dot_start_time = 0;
+  static int sec_buff = 0;
   
   if(seconds % 10 < 7) // in every 0-6 second show time, else show temperature
   {
     if(seconds != sec_buff)
     {
-      show_dot = !show_dot;
+      show_dot_start_time = millis();      
     }
     sec_buff = seconds;
-    auto time_length = time < 100 ? 3 : 4;
-    time_length = time < 10 ? 2 : time_length;
-    display.showNumberDecEx(time, show_dot ? 0b01000000 : 0b00000000, time < 100, time_length, 0);
+    auto show_dot = millis() < show_dot_start_time + 500;
+    display.showNumberDecEx(time, show_dot ? 0b01000000 : 0b00000000, time < 100, time < 100 ? 3 : 4, time < 100 ? 1 : 0);
   }
   else
   {
