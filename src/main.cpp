@@ -27,11 +27,12 @@
 #define DISP_CLK_PIN  0  // D3
 #define DISP_DIO_PIN  1  // TX
 
-#define INCREMENT     5     // %
-#define MANUAL_SPEED  50    // %/s
-#define STARTUP_SPEED 50
-#define STARTUP_VALUE 30
-#define SUNRISE_DURA  1800  // s
+#define INCREMENT_SLOW  2     // %
+#define INCREMENT_FAST  10
+#define MANUAL_SPEED    40    // %/s
+#define STARTUP_SPEED   10
+#define STARTUP_VALUE   10
+#define SUNRISE_DURA    1800  // s
 #define ALARM_TIME_PROVIDER_URL   "http://www.dd.9e.cz/php/requests/get_alarm_time.php"
 #define SUNRISE_PROVIDER_URL      "http://api.sunrise-sunset.org/json?lat=49.7447811&lng=13.3764689"
 #define WEATHER_PROVIDER_URL      "http://api.openweathermap.org/data/2.5/weather?q=Plzen&units=metric&appid=2340d4e1dea5f52590c8421f9b472f93"
@@ -102,32 +103,28 @@ void InitializeStrips()
 }
 
 void stripEncoderHandle(Strip& _strip)
-{  
-  auto isRight = _strip.enc.isFastR() || _strip.enc.isRight();
-  auto isLeft = _strip.enc.isFastL() || _strip.enc.isLeft();
-  auto isSingleClick = _strip.enc.isSingle();
-  auto isDoubleClick = _strip.enc.isDouble();
+{
+  if(_strip.startUp)
+  {
+    return;
+  }
+
+  _strip.enc.tick();
   
   auto change = false;
-  if (isRight && !_strip.startUp)
+  if (_strip.enc.isRight() || _strip.enc.isFastR())
   {
-    if(_strip.speed == MANUAL_SPEED && _strip.currentVal < 20)
-      _strip.targetVal += INCREMENT / 2;
-    else
-      _strip.targetVal += INCREMENT;
     change = true;
+    auto inc = _strip.currentVal < _strip.targetVal ? INCREMENT_FAST : INCREMENT_SLOW;
+    _strip.targetVal += inc;
   }
-
-  if (isLeft && !_strip.startUp)
+  else if (_strip.enc.isLeft() || _strip.enc.isFastL())
   {
-    if(_strip.speed == -MANUAL_SPEED && _strip.currentVal < 20)
-      _strip.targetVal -= INCREMENT / 2;
-    else
-      _strip.targetVal -= INCREMENT;
     change = true;
+    auto inc = _strip.currentVal > _strip.targetVal ? INCREMENT_FAST : INCREMENT_SLOW;
+    _strip.targetVal -= inc;
   }
-
-  if((isSingleClick || _strip.encoderDoubleClicked) && !_strip.startUp)
+  else if(_strip.enc.isSingle())
   {
     DPRINTF("click\n stored value = %.2f\n current value = %.2f\n", _strip.storedVal, _strip.currentVal);
     auto storedValBuff = _strip.storedVal;
@@ -136,24 +133,25 @@ void stripEncoderHandle(Strip& _strip)
     change = true;
     _strip.encoderDoubleClicked = false;
   }
-  
-  if(isDoubleClick)
+  else if(_strip.enc.isDouble())
+  {
     doubleClick = true;
+  }
+  else if(_strip.encoderDoubleClicked)
+  {
+    _strip.storedVal = _strip.currentVal > 0 ? _strip.currentVal : _strip.storedVal;
+    _strip.targetVal = 0;
+    _strip.encoderDoubleClicked = false;
+    change = true;
+  }
+
+  _strip.targetVal = max(min(_strip.targetVal, 100.0), 0.0);  
 
   if(change)
+  {
     _strip.speed = MANUAL_SPEED * (_strip.targetVal > _strip.currentVal ? 1 : -1);
-
-  _strip.targetVal = max(min(_strip.targetVal, 100.0), 0.0);
-
-  // if(isRight)
-  //   DPRINTF("%s is right.\n", _strip.name);
-  // if(isLeft)
-  //   DPRINTF("%s is left.\n", _strip.name);
-  // if(isSingleClick)
-  //   DPRINTF("%s is click.\n", _strip.name);
-  // if(change)
-  //   DPRINTF("%s speed = %.2f, target_value = %.2f.\n", _strip.name, _strip.speed, _strip.targetVal);
-  
+    DPRINTF("%s strip: target value = %.2f\n",_strip.name, _strip.targetVal);
+  }
 }
 
 void stripValueHandle(Strip& _strip)
@@ -183,13 +181,13 @@ void stripValueHandle(Strip& _strip)
   if(_strip.speed != 0 && cycleTime != now)
   {
     auto newVal = _strip.currentVal + _strip.speed * cycleTime / 1000;
-    _strip.currentVal = max(min(newVal, 100.0), 0.0);
+    _strip.currentVal = _strip.speed > 0 ? min(newVal, _strip.targetVal) : max(newVal, _strip.targetVal);
   }
 
   if(_strip.currentVal != _strip.oldVal)
   {
     analogWrite(_strip.mosfetPin, _strip.currentVal * 1024 / 100);
-    DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
+    // DPRINTF("%s strip: new value = %.2f\n",_strip.name, _strip.currentVal);
   }
 
   _strip.oldVal = _strip.currentVal;
