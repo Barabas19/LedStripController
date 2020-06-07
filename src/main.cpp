@@ -1,5 +1,5 @@
 //#define DEBUG_PORT Serial
-#define DEBUG_UDP debug_udp_client
+// #define DEBUG_UDP debug_udp_client
 #define DEBUG_UDP_PORT 24
 
 #include <debug.h>
@@ -13,6 +13,7 @@
 #include <ArduinoJson.h>
 #include <WiFiClient.h>
 #include <TM1637Display.h>
+#include <TimeLib.h>
 
 #define CLK_PIN1      3  // RX  WH
 #define DT_PIN1       5  // D1  GN
@@ -112,13 +113,13 @@ void stripEncoderHandle(Strip& _strip)
   _strip.enc.tick();
   
   auto change = false;
-  if (_strip.enc.isRight() || _strip.enc.isFastR())
+  if (_strip.enc.isFastR() || _strip.enc.isRight())
   {
     change = true;
     auto inc = _strip.currentVal < _strip.targetVal ? INCREMENT_FAST : INCREMENT_SLOW;
     _strip.targetVal += inc;
   }
-  else if (_strip.enc.isLeft() || _strip.enc.isFastL())
+  else if (_strip.enc.isFastL() || _strip.enc.isLeft())
   {
     change = true;
     auto inc = _strip.currentVal > _strip.targetVal ? INCREMENT_FAST : INCREMENT_SLOW;
@@ -284,22 +285,60 @@ void DisplayHandle()
   auto minutes = timeClient.getMinutes();
   auto hours   = timeClient.getHours();
   auto time = hours * 100 + minutes;
-  static uint64_t show_dot_start_time = 0;
+  static ulong show_dot_buff = 0;
+  uint8_t data[] = { 0x00, 0x00, 0x00, 0x00 };
+
+  // update display once per second
   static int sec_buff = 0;
-  
-  if(seconds % 10 < 7) // in every 0-6 second show time, else show temperature
+  auto update = seconds != sec_buff; 
+  sec_buff = seconds;
+
+  // in every 0-5 second show time, 6-7 show date, 8-9 show temperature
+  auto show_time = seconds % 10 <= 5;
+  auto show_date = seconds >= 6 && seconds % 10 <= 7;
+  auto show_temp = seconds >= 8 && seconds % 10 <= 9;
+
+  // flash colon, when time is shown
+  static bool show_colon = true;
+  if(show_time)
   {
-    if(seconds != sec_buff)
+    if(millis() > show_dot_buff + 500)
     {
-      show_dot_start_time = millis();      
+      update = true;
+      show_colon = !show_colon;
+      show_dot_buff = millis();
     }
-    sec_buff = seconds;
-    auto show_dot = millis() < show_dot_start_time + 500;
-    display.showNumberDecEx(time, show_dot ? 0b01000000 : 0b00000000, time < 100, time < 100 ? 3 : 4, time < 100 ? 1 : 0);
   }
-  else
+  
+  // update
+  if(!update)
   {
-    uint8_t data[] = { 0x00, 0x00, 0x00, 0x00 };
+    return;
+  }
+  if(show_time) 
+  {
+    display.showNumberDecEx(time, show_colon ? 0b01000000 : 0b00000000, time < 100, time < 100 ? 3 : 4, time < 100 ? 1 : 0);
+  }
+  else if(show_date)
+  {
+    // generate date for display
+    time_t utcCalc = timeClient.getEpochTime();
+    auto d = day(utcCalc);
+    auto m = month(utcCalc);
+    if(d >= 10)
+    {
+      data[0] = display.encodeDigit(d / 10);
+    }
+    data[1] = display.encodeDigit(d % 10) | 0x80;
+    if(m >= 10)
+    {
+      data[2] = display.encodeDigit(1);
+    }
+    data[3] = display.encodeDigit(m % 10);
+    display.setSegments(data);
+  }
+  else if(show_temp)
+  {
     uint8_t minus = 0b01000000; // '-'
     uint8_t C = 0b00111001; // 'C'
     int temp = temperature > 0 ? temperature : -temperature;
@@ -312,6 +351,7 @@ void DisplayHandle()
     display.setSegments(data);    
   }
 
+  // brightness
   uint8_t brightness = 1;
   if((time > sunrise_end && time < sunset_begin) || strip[0].currentVal > 10 || strip[1].currentVal > 10)
   {
