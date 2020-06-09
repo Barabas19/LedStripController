@@ -65,8 +65,9 @@ uint sunriseDuration = SUNRISE_DURA; // s
 bool sunriseStripEna[2];             // if true, the strip is enabled for sunrise
 bool alarmTimeReq, sunriseEnable, sunriseEnabled, doubleClick, twilightReq, weatherReq;
 int sunrise_begin, sunrise_end, sunset_begin, sunset_end;
-
 int temperature;
+bool show_led_value;
+double led_value_to_show;
 
 struct Strip
 {
@@ -152,6 +153,8 @@ void stripEncoderHandle(Strip& _strip)
   {
     _strip.speed = MANUAL_SPEED * (_strip.targetVal > _strip.currentVal ? 1 : -1);
     DPRINTF("%s strip: target value = %.2f\n",_strip.name, _strip.targetVal);
+    led_value_to_show = _strip.targetVal;
+    show_led_value = true;
   }
 }
 
@@ -288,6 +291,43 @@ void DisplayHandle()
   static ulong show_dot_buff = 0;
   uint8_t data[] = { 0x00, 0x00, 0x00, 0x00 };
 
+  // brightness
+  uint8_t brightness = 1;
+  if((time > sunrise_end && time < sunset_begin) || strip[0].currentVal > 10 || strip[1].currentVal > 10)
+  {
+    brightness = 7;
+  }
+  else if(time > sunrise_begin && time < sunrise_end)
+  {
+    auto sunrise_length = sunrise_end - sunrise_begin;
+    brightness = (time - sunrise_begin) / (sunrise_length / 7);
+  }
+  else if(time > sunset_begin && time < sunset_end)
+  {
+    auto sunset_length = sunset_end - sunset_begin;
+    brightness = (time - sunset_begin) / (sunset_length / 7);
+  }
+  brightness = max(min(brightness, (uint8_t)7), (uint8_t)0);
+
+  display.setBrightness(brightness);
+
+
+  // show strip target value
+  static ulong show_strip_value_start_time = 0;
+  const uint show_strip_value_duration_ms = 1000;
+  if(show_led_value)
+  {
+    display.showNumberDec((int)led_value_to_show);
+    show_strip_value_start_time = millis();
+    show_led_value = false;
+  }
+  if(millis() < show_strip_value_start_time + show_strip_value_duration_ms)
+  {
+    return;
+  }
+
+  // show time, date, temp
+
   // update display once per second
   static int sec_buff = 0;
   auto update = seconds != sec_buff; 
@@ -350,26 +390,6 @@ void DisplayHandle()
       data[temperature <= -10 ? 0 : 1] = minus;
     display.setSegments(data);    
   }
-
-  // brightness
-  uint8_t brightness = 1;
-  if((time > sunrise_end && time < sunset_begin) || strip[0].currentVal > 10 || strip[1].currentVal > 10)
-  {
-    brightness = 7;
-  }
-  else if(time > sunrise_begin && time < sunrise_end)
-  {
-    auto sunrise_length = sunrise_end - sunrise_begin;
-    brightness = (time - sunrise_begin) / (sunrise_length / 7);
-  }
-  else if(time > sunset_begin && time < sunset_end)
-  {
-    auto sunset_length = sunset_end - sunset_begin;
-    brightness = (time - sunset_begin) / (sunset_length / 7);
-  }
-  brightness = max(min(brightness, (uint8_t)7), (uint8_t)0);
-
-  display.setBrightness(brightness);
 }
 
 void UpdateTwilight()
