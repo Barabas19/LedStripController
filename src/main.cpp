@@ -28,13 +28,13 @@
 #define DISP_CLK_PIN  0  // D3
 #define DISP_DIO_PIN  1  // TX
 
-#define INCREMENT_SLOW  2     // %
+#define INCREMENT_SLOW  1     // %
 #define INCREMENT_FAST  10
 #define MANUAL_SPEED    40    // %/s
 #define STARTUP_SPEED   10
-#define STARTUP_VALUE   10
+#define STARTUP_VALUE   5
 #define SUNRISE_DURA    1800  // s
-#define ALARM_TIME_PROVIDER_URL   "http://www.dd.9e.cz/php/requests/get_alarm_time.php"
+#define ALARM_TIME_PROVIDER_URL   "http://www.dd.9e.cz/php/requests/get_ledstrip_values.php"
 #define SUNRISE_PROVIDER_URL      "http://api.sunrise-sunset.org/json?lat=49.7447811&lng=13.3764689"
 #define WEATHER_PROVIDER_URL      "http://api.openweathermap.org/data/2.5/weather?q=Plzen&units=metric&appid=2340d4e1dea5f52590c8421f9b472f93"
 #define NTP_SERVER                "tak.cesnet.cz"
@@ -225,13 +225,14 @@ void sunriseHandle(ulong _now, ulong _alarmTime)
   sunriseEnabled = sunriseEnable;
 }
 
-String GetHttp(String _url)
+String send_get_request(String _url)
 {
   String payload = "";
   DPRINTF("*** Requested url:\n%s\n", _url.c_str());
   HTTPClient http;
   if(http.begin(client, _url))
   {
+    http.setTimeout(1000); // default 5s timeout is too long when internet connection is missing
     if(http.connected())
       DPRINTLN("http connected.");
     delay(500);
@@ -262,22 +263,39 @@ String GetHttp(String _url)
   return payload;
 }
 
-void UpdateSunriseParams()
+void http_handle()
 {
-  String payload = GetHttp(ALARM_TIME_PROVIDER_URL);
+  char url[128];
+  sprintf(url, "%s?current-upper=%.f&current-lower=%.f", ALARM_TIME_PROVIDER_URL, strip[1].currentVal, strip[0].currentVal);
+  
+  String payload = send_get_request(String(url));
   if(payload != "")
   {
-    // payload example: {"alarm":1581119220,"duration":300,"value":100.0,"strip":{"upper":true,"lower":true}}
+    // payload example: {"sunrise:{"alarm":1581119220,"duration":300,"value":100.0,"strip":{"upper":true,"lower":true}},"setvalue":{"upper":20,"lower":-1}}
     DeserializationError error = deserializeJson(alarmJsonDoc, payload);
     if (error) {
       DPRINTF("deserializeJson() failed: %s\n", error.c_str());
       return;
     }
-    alarmTime         = alarmJsonDoc["alarm"];
-    sunriseDuration   = alarmJsonDoc["duration"];
-    sunriseTargetVal  = alarmJsonDoc["value"];
-    sunriseStripEna[0]= alarmJsonDoc["strip"]["upper"];
-    sunriseStripEna[1]= alarmJsonDoc["strip"]["lower"];
+    alarmTime         = alarmJsonDoc["sunrise"]["alarm"];
+    sunriseDuration   = alarmJsonDoc["sunrise"]["duration"];
+    sunriseTargetVal  = alarmJsonDoc["sunrise"]["value"];
+    sunriseStripEna[0]= alarmJsonDoc["sunrise"]["strip"]["upper"];
+    sunriseStripEna[1]= alarmJsonDoc["sunrise"]["strip"]["lower"];
+    int set_upper     = alarmJsonDoc["setvalue"]["upper"];
+    int set_lower     = alarmJsonDoc["setvalue"]["lower"];
+    if(set_lower >= 0 && set_lower != strip[0].currentVal) 
+    {
+      strip[0].targetVal = set_lower; 
+      strip[0].speed = (set_lower > strip[0].currentVal) ? MANUAL_SPEED : -MANUAL_SPEED;
+      DPRINTF("New upper value: %.f, speed: %.f\n", strip[0].targetVal, strip[0].speed);
+    }
+    if(set_upper >= 0 && set_upper != strip[1].currentVal) 
+    {
+      strip[1].targetVal = set_upper; 
+      strip[1].speed = (set_upper > strip[1].currentVal) ? MANUAL_SPEED : -MANUAL_SPEED;
+      DPRINTF("New lower value: %.f, speed: %.f\n", strip[1].targetVal, strip[1].speed);
+    }
     DPRINTF("Json deserialization:\n alarm=%lu\n duration=%d\n value=%.2f\n upper=%d\n lower=%d\n", alarmTime, sunriseDuration, sunriseTargetVal, sunriseStripEna[0], sunriseStripEna[1]);
   }  
 }
@@ -394,7 +412,7 @@ void DisplayHandle()
 
 void UpdateTwilight()
 {
-  String payload = GetHttp(SUNRISE_PROVIDER_URL);
+  String payload = send_get_request(SUNRISE_PROVIDER_URL);
   if(payload != "")
   {
     // payload example: { "results":{"sunrise":"5:32:38 AM","sunset":"5:01:25 PM","solar_noon":"11:17:01 AM","day_length":"11:28:47",
@@ -441,7 +459,7 @@ void UpdateTwilight()
 
 void UpdateCurrentTemperature()
 {
-  String payload = GetHttp(WEATHER_PROVIDER_URL);
+  String payload = send_get_request(WEATHER_PROVIDER_URL);
   if(payload != "")
   {
     // payload example: {"coord":{"lon":13.38,"lat":49.75},"weather":[{"id":800,"main":"Clear","description":"clear sky","icon":"01d"}],
@@ -487,7 +505,7 @@ void setup()
   timeClient.begin();
   timeClient.update();
   InitializeStrips();
-  UpdateSunriseParams();
+  http_handle();
   UpdateTwilight();
   UpdateCurrentTemperature();
 
@@ -511,13 +529,13 @@ void loop()
     doubleClick = false;
   }
 
-  if(timeClient.getSeconds() == 0)
+  if(timeClient.getSeconds() % 5 == 0)
     alarmTimeReq = true;
   else if(alarmTimeReq)
   {
     timeClient.update();
     DPRINTF("Formated time: %s\n", timeClient.getFormattedTime().c_str());
-    UpdateSunriseParams();
+    http_handle();
     sunriseHandle(timeClient.getEpochTime() - 3600, alarmTime);
     alarmTimeReq = false;
   }
