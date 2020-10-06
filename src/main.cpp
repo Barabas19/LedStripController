@@ -37,7 +37,7 @@
 #define ALARM_TIME_PROVIDER_URL   "http://www.dd.9e.cz/php/requests/get_ledstrip_values.php"
 #define SUNRISE_PROVIDER_URL      "http://api.sunrise-sunset.org/json?lat=49.7447811&lng=13.3764689"
 #define WEATHER_PROVIDER_URL      "http://api.openweathermap.org/data/2.5/weather?q=Plzen&units=metric&appid=2340d4e1dea5f52590c8421f9b472f93"
-#define NTP_SERVER                "tak.cesnet.cz"
+#define NTP_SERVER                "tik.cesnet.cz"
 #define SUMMER_TIME
 
 const char* otaHostName = "WorkspaceLedStrip";
@@ -533,7 +533,9 @@ void loop()
     alarmTimeReq = true;
   else if(alarmTimeReq)
   {
-    timeClient.update();
+    if(!timeClient.update())
+      DPRINTLN("Failed to update time.");
+
     DPRINTF("Formated time: %s\n", timeClient.getFormattedTime().c_str());
     http_handle();
     sunriseHandle(timeClient.getEpochTime() - 3600, alarmTime);
