@@ -31,6 +31,7 @@
 #define INCREMENT_SLOW  1     // %
 #define INCREMENT_FAST  10
 #define MANUAL_SPEED    40    // %/s
+#define CHANGE_DURATION 1     // s - how fast the target value will be reached
 #define STARTUP_SPEED   10
 #define STARTUP_VALUE   5
 #define SUNRISE_DURA    1800  // s
@@ -151,7 +152,8 @@ void stripEncoderHandle(Strip& _strip)
 
   if(change)
   {
-    _strip.speed = MANUAL_SPEED * (_strip.targetVal > _strip.currentVal ? 1 : -1);
+    _strip.speed = (_strip.targetVal - _strip.currentVal) / CHANGE_DURATION;
+    // _strip.speed = MANUAL_SPEED * (_strip.targetVal > _strip.currentVal ? 1 : -1);
     DPRINTF("%s strip: target value = %.2f\n",_strip.name, _strip.targetVal);
     led_value_to_show = _strip.targetVal;
     show_led_value = true;
@@ -287,13 +289,19 @@ void http_handle()
     if(set_lower >= 0 && set_lower != strip[0].currentVal) 
     {
       strip[0].targetVal = set_lower; 
-      strip[0].speed = (set_lower > strip[0].currentVal) ? MANUAL_SPEED : -MANUAL_SPEED;
+      strip[0].speed = (strip[0].targetVal - strip[0].currentVal) * CHANGE_DURATION;
+      led_value_to_show = strip[0].targetVal;
+      show_led_value = true;
+      // strip[0].speed = (set_lower > strip[0].currentVal) ? MANUAL_SPEED : -MANUAL_SPEED;
       DPRINTF("New upper value: %.f, speed: %.f\n", strip[0].targetVal, strip[0].speed);
     }
     if(set_upper >= 0 && set_upper != strip[1].currentVal) 
     {
       strip[1].targetVal = set_upper; 
-      strip[1].speed = (set_upper > strip[1].currentVal) ? MANUAL_SPEED : -MANUAL_SPEED;
+      strip[1].speed = (strip[1].targetVal - strip[1].currentVal) * CHANGE_DURATION;
+      led_value_to_show = strip[1].targetVal;
+      show_led_value = true;
+      // strip[1].speed = (set_upper > strip[1].currentVal) ? MANUAL_SPEED : -MANUAL_SPEED;
       DPRINTF("New lower value: %.f, speed: %.f\n", strip[1].targetVal, strip[1].speed);
     }
     DPRINTF("Json deserialization:\n alarm=%lu\n duration=%d\n value=%.2f\n upper=%d\n lower=%d\n", alarmTime, sunriseDuration, sunriseTargetVal, sunriseStripEna[0], sunriseStripEna[1]);
@@ -332,18 +340,26 @@ void DisplayHandle()
 
   // show strip target value
   static ulong show_strip_value_start_time = 0;
-  const uint show_strip_value_duration_ms = 1000;
+  // const uint show_strip_value_duration_ms = 1000;
+  static bool show_led_value_buf = false;
   if(show_led_value)
   {
+    if(!show_led_value_buf) 
+    {
+      show_strip_value_start_time = millis();
+    }
     display.showNumberDec((int)led_value_to_show);
-    show_strip_value_start_time = millis();
-    show_led_value = false;
+    if(strip[0].targetVal == strip[0].currentVal && strip[1].targetVal == strip[1].currentVal)
+    {
+      show_led_value = false;
+    }
   }
-  if(millis() < show_strip_value_start_time + show_strip_value_duration_ms)
+  show_led_value_buf = show_led_value;
+  if(show_led_value)
   {
     return;
   }
-
+  
   // show time, date, temp
 
   // update display once per second
@@ -531,7 +547,7 @@ void loop()
 
   if(timeClient.getSeconds() % 5 == 0)
     alarmTimeReq = true;
-  else if(alarmTimeReq)
+  else if(alarmTimeReq && !show_led_value)
   {
     if(!timeClient.update())
       DPRINTLN("Failed to update time.");
@@ -544,7 +560,7 @@ void loop()
 
   if(timeClient.getMinutes() % 10 == 0)
     weatherReq = true;
-  else if(weatherReq)
+  else if(weatherReq && !show_led_value)
   {
     UpdateCurrentTemperature();
     weatherReq = false;
@@ -552,7 +568,7 @@ void loop()
 
   if(timeClient.getMinutes() == 0)
     twilightReq = true;
-  else if(twilightReq)
+  else if(twilightReq && !show_led_value)
   {
     UpdateTwilight();
     twilightReq = false;
