@@ -1,6 +1,6 @@
 //#define DEBUG_PORT Serial
 // #define DEBUG_UDP debug_udp_client
-#define DEBUG_UDP_PORT 24
+// #define DEBUG_UDP_PORT 24
 
 #include <debug.h>
 #include <Arduino.h>
@@ -39,7 +39,7 @@
 #define SUNRISE_PROVIDER_URL      "http://api.sunrise-sunset.org/json?lat=49.7447811&lng=13.3764689"
 #define WEATHER_PROVIDER_URL      "http://api.openweathermap.org/data/2.5/weather?q=Plzen&units=metric&appid=2340d4e1dea5f52590c8421f9b472f93"
 #define NTP_SERVER                "tik.cesnet.cz"
-#define SUMMER_TIME
+// #define SUMMER_TIME
 
 const char* otaHostName = "WorkspaceLedStrip";
 const char* otaPassword = "esp1901";
@@ -339,22 +339,22 @@ void DisplayHandle()
 
 
   // show strip target value
-  static ulong show_strip_value_start_time = 0;
+  // static ulong show_strip_value_start_time = 0;
   // const uint show_strip_value_duration_ms = 1000;
-  static bool show_led_value_buf = false;
+  // static bool show_led_value_buf = false;
   if(show_led_value)
   {
-    if(!show_led_value_buf) 
-    {
-      show_strip_value_start_time = millis();
-    }
+    // if(!show_led_value_buf) 
+    // {
+    //   show_strip_value_start_time = millis();
+    // }
     display.showNumberDec((int)led_value_to_show);
     if(strip[0].targetVal == strip[0].currentVal && strip[1].targetVal == strip[1].currentVal)
     {
       show_led_value = false;
     }
   }
-  show_led_value_buf = show_led_value;
+  // show_led_value_buf = show_led_value;
   if(show_led_value)
   {
     return;
