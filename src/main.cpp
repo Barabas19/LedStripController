@@ -39,18 +39,13 @@
 #define SUNRISE_PROVIDER_URL      "http://api.sunrise-sunset.org/json?lat=49.7447811&lng=13.3764689"
 #define WEATHER_PROVIDER_URL      "http://api.openweathermap.org/data/2.5/weather?q=Plzen&units=metric&appid=2340d4e1dea5f52590c8421f9b472f93"
 #define NTP_SERVER                "tik.cesnet.cz"
-// #define SUMMER_TIME
 
 const char* otaHostName = "WorkspaceLedStrip";
 const char* otaPassword = "esp1901";
 const char* ssid        = "SkyNET";
 const char* password    = "18Kuskov!";
 
-const long utcOffsetInSeconds = 3600
-#ifdef SUMMER_TIME
-  + 3600
-#endif
-;
+const long utcOffsetInSeconds = 3600;
 WiFiUDP ntpUDP;
 WiFiClient client;  // !!!!!!! Must be a global variable
 NTPClient timeClient(ntpUDP, NTP_SERVER, utcOffsetInSeconds);
@@ -308,6 +303,24 @@ void http_handle()
   }  
 }
 
+bool is_dst()
+{
+  bool dst;
+  time_t utcCalc = timeClient.getEpochTime();
+  auto y = year(utcCalc);
+  auto x_march = (y + y/4 + 5) % 7;
+  auto x_novem = (y + y/4 + 2) % 7;
+  auto m = month(utcCalc);
+  auto d = day(utcCalc);
+  auto h = hour(utcCalc);
+  if((m == 3 && d == (31 - x_march) && h >= 2) || (m == 3 && d > (31 - x_march) || m > 3))
+    dst = true;
+  if((m == 1 && d == (31 - x_novem) && h >= 2) || (m == 11 && d == (31 - x_novem) || m > 11 || m < 3))
+    dst = false;
+
+  return dst;
+}
+
 void DisplayHandle()
 {
   auto seconds = timeClient.getSeconds();
@@ -545,12 +558,14 @@ void loop()
     doubleClick = false;
   }
 
-  if(timeClient.getSeconds() % 5 == 0)
+  if(timeClient.getSeconds() % 31 == 0)
     alarmTimeReq = true;
   else if(alarmTimeReq && !show_led_value)
   {
     if(!timeClient.update())
       DPRINTLN("Failed to update time.");
+    else
+      timeClient.setTimeOffset(is_dst() ? utcOffsetInSeconds + 3600 : utcOffsetInSeconds);
 
     DPRINTF("Formated time: %s\n", timeClient.getFormattedTime().c_str());
     http_handle();
